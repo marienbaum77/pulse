@@ -1,0 +1,6 @@
+{$PULSE_DOMAIN} {
+	encode gzip
+	reverse_proxy web:80 {
+		flush_interval -1   # живые события (SSE) не буферизуются
+	}
+}

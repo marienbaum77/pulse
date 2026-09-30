@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Палитра: холодная «газетная» бумага, чернильно-синий для действий, маркер-жёлтый — только для веса сюжета. */
+:root {
+  --paper: #ecefed;
+  --surface: #f8f9f8;
+  --sunken: #e2e7e4;
+  --ink: #16201c;
+  --muted: #56655d;
+  --rule: #cdd5d0;
+  --brand: #1b2b4b;
+  --brand-ink: #f4f6fa;
+  --mark: #f6d64a;
+  --mark-ink: #16201c;
+  --ok: #2b7a52;
+  --warn: #9a6208;
+  --bad: #b23b33;
+  --info: #2a5ca6;
+}
+.dark {
+  --paper: #0f1519;
+  --surface: #151d22;
+  --sunken: #0b1114;
+  --ink: #e6ece9;
+  --muted: #8fa098;
+  --rule: #25323a;
+  --brand: #c7d6f2;
+  --brand-ink: #0f1a2e;
+  --mark: #d9b93a;
+  --mark-ink: #16201c;
+  --ok: #5dbe8a;
+  --warn: #e0a84a;
+  --bad: #ef7b72;
+  --info: #7fa6e6;
+}
+
+@theme inline {
+  --font-sans: "Golos Text Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "Literata Variable", Georgia, "Times New Roman", serif;
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-rule: var(--rule);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-mark: var(--mark);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-info: var(--info);
+}
+
+@layer base {
+  html { color-scheme: light; }
+  html.dark { color-scheme: dark; }
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+    font-size: 15px;
+    line-height: 1.5;
+    font-feature-settings: "tnum" 0;
+  }
+  h1, h2, h3 { @apply font-serif; letter-spacing: -0.01em; }
+  :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+  ::selection { background: var(--mark); color: var(--mark-ink); }
+  a { color: inherit; }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+}
+
+@layer components {
+  .num { font-variant-numeric: tabular-nums; }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-3.5 h-9 text-sm font-medium select-none cursor-pointer whitespace-nowrap;
+    border-radius: 3px;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    color: var(--ink);
+    transition: background-color 120ms, border-color 120ms, opacity 120ms;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--muted); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-primary { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
+  .btn-primary:hover:not(:disabled) { opacity: 0.9; border-color: var(--brand); }
+  .btn-danger { color: var(--bad); }
+  .btn-danger:hover:not(:disabled) { border-color: var(--bad); }
+  .btn-ghost { background: transparent; border-color: transparent; }
+  .btn-ghost:hover:not(:disabled) { background: var(--sunken); border-color: transparent; }
+  .btn-sm { @apply h-8 px-2.5 text-[13px]; }
+
+  .field {
+    @apply w-full px-3 text-sm;
+    height: 2.25rem;
+    border-radius: 3px;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    color: var(--ink);
+  }
+  textarea.field { height: auto; padding-top: 0.5rem; padding-bottom: 0.5rem; line-height: 1.55; }
+  .field:hover { border-color: var(--muted); }
+  .field::placeholder { color: var(--muted); opacity: 0.7; }
+
+  .label { @apply block text-[13px] font-medium mb-1.5; color: var(--ink); }
+  .hint { @apply text-[13px]; color: var(--muted); }
+
+  /* «Маркерный» вес: жёлтая полоса под числом, ширина пропорциональна значению */
+  .marker-track { position: relative; height: 22px; background: var(--sunken); border-radius: 2px; overflow: hidden; }
+  .marker-fill { position: absolute; inset: 0 auto 0 0; background: var(--mark); transform-origin: left; transition: width 300ms ease-out; }
+  .marker-num { position: relative; z-index: 1; color: var(--mark-ink); font-weight: 600; font-size: 13px; line-height: 22px; padding-left: 7px; }
+
+  .rule-b { border-bottom: 1px solid var(--rule); }
+  .rule-t { border-top: 1px solid var(--rule); }
+  .eyebrow { @apply text-[12px] font-medium; color: var(--muted); letter-spacing: 0.01em; }
+
+  .prose-draft { font-family: var(--font-serif); font-size: 17px; line-height: 1.7; }
+}
+
+@keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+/* backwards, не both: после окончания у страницы не остаётся transform, иначе position:fixed внутри неё считается от страницы, а не от окна */
+.fadein { animation: fadein 180ms ease-out backwards; }
+@keyframes slidein { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.slidein { animation: slidein 200ms ease-out both; }

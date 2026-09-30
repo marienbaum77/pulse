@@ -1,0 +1,24 @@
+# Надстройка для VPS: HTTPS с автоматическим сертификатом (Caddy). Запуск:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# Нужен домен, A-запись которого указывает на IP сервера; в .env: PULSE_DOMAIN=pulse.example.com и COOKIE_SECURE=true.
+# Нужен Docker Compose 2.24+ (тег !override).
+services:
+  web:
+    # наружу интерфейс смотрит только через Caddy (HTTPS); напрямую — лишь с самого сервера
+    ports: !override ["127.0.0.1:${PULSE_PORT:-8080}:80"]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [web]
+    ports: ["80:80", "443:443"]
+    environment:
+      PULSE_DOMAIN: ${PULSE_DOMAIN:?Задайте PULSE_DOMAIN в .env, например pulse.example.com}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

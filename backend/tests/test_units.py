@@ -1,0 +1,385 @@
+from datetime import datetime, timedelta, timezone
+
+import httpx
+import numpy as np
+
+from app.pipeline import scoring
+from app.pipeline.clustering_core import Cluster, OnlineClusterer
+from app.pipeline.context import Block
+from app.pipeline.generate import automatic_review, check_text, decide_use_llm, extractive_text, gate_auto_publish, normalize_generated_post, parse_output
+from app.api.core import parse_opml
+from app.publisher import classify_exception, classify_telegram, render_telegram_html, sources_footer
+from app.providers import _provider_error_detail
+from app.textutil import normalize_url, numbers_in, split_sentences, strip_citations, strip_html, strip_source_footer, truncate
+
+T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def vec(*xs):
+    return np.array(xs, dtype=np.float32)
+
+
+# ---------- кластеризация ----------
+def test_online_clusterer_groups_similar_and_splits_different():
+    c = OnlineClusterer(0.8, timedelta(hours=48))
+    a1, _ = c.add(vec(1, 0.1, 0), T0)
+    a2, _ = c.add(vec(0.9, 0.2, 0), T0 + timedelta(hours=1))
+    b1, _ = c.add(vec(0, 0, 1), T0 + timedelta(hours=2))
+    assert a1 is a2 and a1 is not b1
+    assert a1.n == 2 and len(c.clusters) == 2
+
+
+def test_online_clusterer_respects_window():
+    c = OnlineClusterer(0.8, timedelta(hours=10))
+    first, _ = c.add(vec(1, 0, 0), T0)
+    second, _ = c.add(vec(1, 0, 0), T0 + timedelta(hours=30))
+    assert first is not second  # тот же вектор, но кластер вышел из окна
+
+
+def test_cluster_roundtrip_through_db_representation():
+    c = OnlineClusterer(0.5, timedelta(hours=48))
+    cl, _ = c.add(vec(1, 0), T0)
+    c.add(vec(0.8, 0.6), T0 + timedelta(hours=1))
+    restored = Cluster.from_db(1, cl.centroid, cl.n, cl.first_seen, cl.last_seen)
+    assert np.allclose(restored.sum, cl.sum, atol=1e-5)
+    restored_clusterer = OnlineClusterer(0.5, timedelta(hours=48), [restored])
+    joined, _ = restored_clusterer.add(vec(0.9, 0.4), T0 + timedelta(hours=2))
+    assert joined is restored and restored.n == 3
+
+
+# ---------- скоринг ----------
+def _features(**over):
+    base = dict(centroid=vec(1, 0), source_count=4, authority=0.7, age_hours=2, recent_items=3, window_hours=48, topic_vec=vec(1, 0))
+    base.update(over)
+    return scoring.compute_features(**base)
+
+
+def test_nws_components_and_breakdown():
+    score, parts = scoring.nws(_features(), scoring.DEFAULT_WEIGHTS)
+    assert set(parts) == set(scoring.COMPONENTS)
+    assert abs(score - sum(p["contribution"] for p in parts.values())) < 1e-3
+    assert "redundancy" not in parts
+
+
+def test_topic_fit_is_the_dominant_score_weight():
+    assert scoring.DEFAULT_WEIGHTS["topic_fit"] > sum(weight for name, weight in scoring.DEFAULT_WEIGHTS.items() if name != "topic_fit")
+
+
+def test_topic_threshold_rejects_low_fit_but_keeps_neutral_and_disabled():
+    assert not scoring.topic_passes_threshold({"value": 0.3791}, 0.4)
+    assert scoring.topic_passes_threshold({"value": 0.4}, 0.4)
+    assert scoring.topic_passes_threshold({"value": 0.5, "neutral": True}, 0.8)
+    assert scoring.topic_passes_threshold({"value": 0.1}, 0)
+
+
+def test_freshness_halves_every_half_life():
+    assert abs(scoring.freshness(12, 12) - 0.5) < 1e-9
+    assert scoring.freshness(0, 12) == 1.0
+
+
+def test_weights_override_and_ignore_unknown():
+    s1, _ = scoring.nws(_features(), {"coverage": 1.0, "bogus": 5})
+    s2, _ = scoring.nws(_features(), {"coverage": 0.0})
+    assert s1 > s2
+
+
+# ---------- публикатор ----------
+def test_classify_telegram():
+    assert classify_telegram(200, {"ok": True, "result": {"message_id": 42}}).external_id == "42"
+    r = classify_telegram(429, {"parameters": {"retry_after": 7}})
+    assert r.kind == "retry" and r.retry_after == 7
+    assert classify_telegram(400, {"description": "chat not found"}).kind == "failed"
+    assert classify_telegram(502, {}).kind == "unknown"  # запрос мог дойти — автоповтор небезопасен
+
+
+def test_classify_exception_distinguishes_safe_retry_from_unknown():
+    assert classify_exception(httpx.ConnectError("boom")).kind == "retry"
+    assert classify_exception(httpx.ConnectTimeout("boom")).kind == "retry"
+    assert classify_exception(httpx.ReadTimeout("boom")).kind == "unknown"
+    assert classify_exception(httpx.RemoteProtocolError("boom")).kind == "unknown"
+    assert classify_exception(RuntimeError("bug")).kind == "unknown"
+
+
+def test_provider_error_detail_includes_read_timeout_limit_and_http_body():
+    timeout = httpx.ReadTimeout("", request=httpx.Request("POST", "http://ollama/v1/chat/completions"))
+    assert _provider_error_detail(timeout, 180) == "ReadTimeout: модель не ответила за 180 с (LLM_TIMEOUT)"
+
+    request = httpx.Request("POST", "http://ollama/v1/chat/completions")
+    response = httpx.Response(400, json={"error": "model context too large"}, request=request)
+    error = httpx.HTTPStatusError("bad request", request=request, response=response)
+    assert "HTTP 400" in _provider_error_detail(error, 180)
+    assert "model context too large" in _provider_error_detail(error, 180)
+
+
+def test_render_telegram_escapes_and_limits():
+    cites = [{"n": 1, "url": 'https://e.com/?a="1"&b=2', "source": "S<1>"}]
+    html = render_telegram_html("A [1] <b>&", "x < y & z " * 600, cites, limit=1000)
+    assert "&lt;b&gt;" in html and len(html) <= 1000
+    assert "[1]" not in html
+    assert 'href="https://e.com/?a=&quot;1&quot;&amp;b=2"' in html and "S&lt;1&gt;" in html
+
+
+def test_published_post_has_no_citation_markers_but_has_source_links():
+    cites = [{"n": 1, "url": "https://a.test/1", "source": "ТехДень"}, {"n": 2, "url": "https://b.test/2", "source": "ТехДень"},
+             {"n": 3, "url": "https://c.test/3", "source": "Облачный дозор"}]
+    html = render_telegram_html("Заголовок", "Первый факт. [1][2] Второй факт [3].\n\nИсточники:\nТехДень, 27.09 17:57", cites)
+    assert "[1]" not in html and "[3]" not in html and "Первый факт. Второй факт." in html
+    assert 'Источники: <a href="https://a.test/1">ТехДень</a>, <a href="https://b.test/2">ТехДень</a>, <a href="https://c.test/3">Облачный дозор</a>' in html
+
+
+def test_sources_footer_skips_citations_without_url():
+    assert sources_footer([{"n": 1, "source": "Без ссылки", "url": ""}]) == ""
+    assert sources_footer([]) == ""
+
+
+def test_strip_source_footer_removes_model_generated_reference_list():
+    text = "Текст поста [1].\n\nИсточники:\nhabr, 27.09 17:57\nкоммерсант, 26.09 22:34"
+    assert strip_source_footer(text) == "Текст поста [1]."
+
+
+def test_strip_citations():
+    assert strip_citations("Факт. [1][2] Следующий.") == "Факт. Следующий."
+    assert strip_citations("Факт [1].") == "Факт."
+    assert strip_citations("1. Заголовок\nТекст [3][4]. Ещё [5]\n\n2. Второй") == "1. Заголовок\nТекст. Ещё\n\n2. Второй"  # нумерация списка не пострадала
+    assert strip_citations("Массив a[0] остаётся, как и b[1]") == "Массив a[0] остаётся, как и b[1]"  # индекс в тексте — не ссылка
+    assert strip_citations("Ключ[1] и [2] тоже", {1, 2}) == "Ключ и тоже"  # номера из источников черновика удаляются даже вплотную
+
+
+# ---------- проверки генерации ----------
+def test_check_text_flags_unsupported_numbers_and_bad_citations():
+    cites = [{"n": 1, "title": "Тариф вырос на 15%", "excerpt": "Цена вырастет на 15% с 1 октября."}]
+    ok = check_text("Тариф вырастет на 15% [1].", cites)
+    assert ok["unsupported_numbers"] == [] and ok["invalid_citations"] == [] and ok["citation_coverage"] == 1.0
+    bad = check_text("Тариф вырастет на 25% [1]. Есть данные [3].", cites)
+    assert bad["unsupported_numbers"] == ["25"] and bad["invalid_citations"] == [3]
+
+
+def test_check_text_ignores_list_numbering():
+    cites = [{"n": 1, "title": "т", "excerpt": "Текст без чисел."}]
+    assert check_text("1. Заголовок\nТекст [1].\n\n2. Другой\nЕщё [1].", cites)["unsupported_numbers"] == []
+
+
+def test_automatic_review_requires_supported_cited_content_and_length():
+    citations = [{"n": 1, "title": "Тарифы", "excerpt": "С 1 октября тариф вырастет на 15%."}]
+    body = "Тариф вырастет на 15% [1]. Это подтверждают опубликованные сведения [1]. Изменение вступит в силу согласно сообщению источника [1]."
+    checks = check_text(body, citations)
+    assert automatic_review("Тарифы изменятся", body, citations, checks, 200)["passed"]
+
+    unsupported = check_text("Тариф вырастет на 25% [1].", citations)
+    assert not automatic_review("Тарифы изменятся", "Тариф вырастет на 25% [1].", citations, unsupported, 100)["passed"]
+    uncited = check_text("Тариф вырастет на 15%.", citations)
+    assert "Покрытие предложений ссылками на источники ниже 50%" in automatic_review("Тарифы изменятся", "Тариф вырастет на 15%.", citations, uncited, 100)["reasons"]
+    assert "Превышен лимит длины (5 символов)" in automatic_review("Тарифы изменятся", body, citations, checks, 5)["reasons"]
+
+
+def test_automatic_review_blocks_short_unenriched_and_wrong_language_posts():
+    failed_short_source = [{"n": 1, "title": "Бангкок", "excerpt": "Бангкок", "article_content_status": "failed", "content_length": 12}]
+    short = automatic_review("Бангкок", "Бангкок [1]", failed_short_source, {}, 900)
+    assert "Текст слишком короткий (меньше 80 символов)" in short["reasons"]
+    assert "Полный текст короткой RSS-заметки не удалось получить" in short["reasons"]
+    assert gate_auto_publish(short, "full_auto") is False
+
+    english = "The government announced a major economic policy update today. " * 2
+    wrong_language = automatic_review("Update", english, [{"n": 1, "excerpt": english}], {}, 900)
+    assert any(reason.startswith("Текст, вероятно, не на заданном языке") for reason in wrong_language["reasons"])
+    assert gate_auto_publish(wrong_language, "full_auto") is False
+
+
+def test_gate_auto_publish_modes():
+    passed = {"passed": True, "reasons": []}
+    failed = {"passed": False, "reasons": ["Пустой текст"]}
+    # «auto» публикует только прошедшие проверки
+    assert gate_auto_publish(passed, "auto") is True
+    assert gate_auto_publish(failed, "auto") is False
+    # «full_auto» пропускает обычные замечания, но не критические проблемы качества.
+    assert gate_auto_publish(passed, "full_auto") is True
+    assert gate_auto_publish({"passed": False, "reasons": ["Есть числа, не найденные в источниках"]}, "full_auto") is True
+    assert gate_auto_publish(failed, "full_auto") is False
+    # «review» никогда не участвует в этой ветке, но функция всё равно детерминирована
+    assert gate_auto_publish(passed, "review") is True
+    assert gate_auto_publish(failed, "review") is False
+
+
+def test_parse_output_extracts_title():
+    t, b = parse_output("## Заголовок: Новый релиз\n\nТекст поста [1].")
+    assert t == "Новый релиз" and b == "Текст поста [1]."
+
+
+def test_generated_post_uses_one_clean_headline_and_moves_extra_sentences_to_body():
+    title = (
+        "Nvidia запустила платформу Open Agent Safety Platform для предотвращения атак "
+        "со стороны ИИ-агентов [1][2]. "
+        "Эта платформа позволяет разработчикам задавать ограничения для ИИ-агентов [1]. "
+        "Nvidia утверждает, что платформа могла предотвратить инцидент с Hugging Face [2]."
+    )
+    body = "По данным источников, система проверяет ограничения во время выполнения задач [2]."
+
+    headline, result_body = normalize_generated_post(title, body)
+
+    assert headline == (
+        "Nvidia запустила платформу Open Agent Safety Platform для предотвращения атак "
+        "со стороны ИИ-агентов."
+    )
+    assert len(split_sentences(headline)) == 1
+    assert "[1]" not in headline and "[2]" not in headline
+    assert "Эта платформа позволяет разработчикам задавать ограничения для ИИ-агентов [1]." in result_body
+    assert "Nvidia утверждает, что платформа могла предотвратить инцидент с Hugging Face [2]." in result_body
+    assert body in result_body
+
+
+def test_generated_post_shortens_long_headline_and_preserves_original_in_body():
+    long_title = "Новый инструмент компании позволяет разработчикам защищать автономные системы от атак и контролировать их действия."
+
+    headline, body = normalize_generated_post(long_title, "Подробности ниже.", max_headline_chars=80)
+
+    assert len(headline) <= 120
+    assert headline.endswith("…")
+    assert long_title in body
+    assert "Подробности ниже." in body
+
+
+# ---------- утилиты ----------
+def test_textutil():
+    assert strip_html("<p>Привет&nbsp;<b>мир</b></p>") == "Привет мир"
+    # ячейки таблицы не должны склеиваться без разделителя
+    table = strip_html("<table><tr><td>1 - Python</td><td>5 - C#</td></tr></table>")
+    assert "Python" in table and "C#" in table and "Python5" not in table.replace(" ", "")
+    assert normalize_url("HTTPS://Example.com/a/?utm_source=x&id=5#frag") == "https://example.com/a?id=5"
+    assert numbers_in("Выросло на 1 200 рублей и 15,5%") == {"1200", "15.5"}
+    assert len(split_sentences("Первое предложение. Второе предложение! Третье?")) == 3
+    assert len(truncate("Слово. " * 100, 50)) <= 51
+
+
+def test_decide_use_llm_auto():
+    class P:
+        supports_chat = True
+
+    short = [Block(1, 1, "habr", "TIOBE", "", ["Fortran на 11 месте."], T0)]
+    assert decide_use_llm("auto", short, P()) == (False, "extractive")
+    assert decide_use_llm("llm", short, P()) == (True, "llm")
+    assert decide_use_llm("extractive", short, P()) == (False, "extractive")
+    multi = [
+        Block(1, 1, "A", "t", "", ["Факт один про событие."], T0),
+        Block(2, 2, "B", "t", "", ["Факт два про то же событие."], T0),
+    ]
+    assert decide_use_llm("auto", multi, P()) == (True, "llm")
+    long = [Block(1, 1, "A", "t", "", ["x" * 700], T0)]
+    assert decide_use_llm("auto", long, P()) == (False, "extractive")
+
+
+def test_language_mismatch_forces_translation_even_for_single_source_and_extractive_mode():
+    class P:
+        supports_chat = True
+
+    english = [Block(1, 1, "source", "OpenAI tests a new always-on assistant.", "", [
+        "The assistant may help users manage their email accounts and organize incoming messages.",
+    ], T0)]
+    assert decide_use_llm("auto", english, P(), "ru") == (True, "llm")
+    assert decide_use_llm("extractive", english, P(), "ru") == (True, "llm")
+    assert decide_use_llm("auto", english, P(), "en") == (False, "extractive")
+
+
+def test_parse_opml():
+    xml = """<?xml version="1.0"?>
+    <opml version="2.0"><body>
+      <outline text="News" title="News" xmlUrl="https://example.com/rss"/>
+      <outline text="Dup" xmlUrl="https://example.com/rss"/>
+      <outline text="Folder"><outline text="Inner" xmlUrl="https://habr.com/rss"/></outline>
+      <outline text="NoUrl"/>
+    </body></opml>"""
+    feeds = parse_opml(xml)
+    assert len(feeds) == 2
+    assert feeds[0]["url"] == "https://example.com/rss"
+    assert feeds[1]["url"] == "https://habr.com/rss"
+
+
+def test_extractive_text_merges_duplicate_facts_and_cites_all_sources():
+    fact = "Затронуты около 120 тысяч учётных записей."
+    blocks = [
+        Block(1, 10, "А", "т", "", [fact, "Компания сбросила пароли."], T0),
+        Block(2, 11, "Б", "т", "", [fact], T0),
+        Block(3, 12, "В", "т", "", ["Причиной назвали ошибку в настройке хранилища."], T0),
+    ]
+    text = extractive_text(blocks, 900)
+    assert text.count("120 тысяч") == 1  # один и тот же факт не повторяется
+    assert f"{fact} [1][2]" in text  # но подтверждён обоими источниками
+    assert "[3]" in text
+
+
+def test_extractive_text_keeps_later_facts_after_duplicate_lead():
+    block = Block(
+        1,
+        10,
+        "А",
+        "т",
+        "",
+        [
+            "OpenAI тестирует нового помощника для работы с почтой.",
+            "OpenAI тестирует нового помощника для работы с почтой.",
+            "Пользователи заметили упоминание функции в тарифе Pro.",
+            "В конфигурации найдены параметры почтового помощника.",
+        ],
+        T0,
+    )
+    text = extractive_text([block], 900)
+    assert text.count("OpenAI тестирует") == 1
+    assert "упоминание функции в тарифе Pro" in text
+    assert "параметры почтового помощника" in text
+
+
+# ---------- картинки ----------
+def test_parse_feed_extracts_image_from_media_enclosure_and_body():
+    from app.pipeline.ingest import parse_feed
+
+    xml = """<?xml version="1.0"?><rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>t</title>
+    <item><title>A</title><link>https://s.test/a</link><description>x</description><media:content url="https://cdn.test/a.jpg" medium="image"/></item>
+    <item><title>B</title><link>https://s.test/b</link><description>x</description><enclosure url="https://cdn.test/b.png" type="image/png" length="1"/></item>
+    <item><title>C</title><link>https://s.test/c</link><description>&lt;img src="/img/c.webp" width="600"&gt; текст</description></item>
+    <item><title>D</title><link>https://s.test/d</link><description>&lt;img src="https://s.test/pixel.gif" width="1"&gt;&lt;img src="/logo.png"&gt; текст</description></item>
+    </channel></rss>""".encode()
+    urls = {e["title"]: e["image_url"] for e in parse_feed(xml)}
+    assert urls == {"A": "https://cdn.test/a.jpg", "B": "https://cdn.test/b.png", "C": "https://s.test/img/c.webp", "D": None}
+
+
+def test_normalize_image_url_rejects_unsafe_and_junk():
+    from app.images import normalize_image_url
+
+    assert normalize_image_url("javascript:alert(1)") is None
+    assert normalize_image_url("data:image/png;base64,AAAA") is None
+    assert normalize_image_url("https://x.test/icon.svg") is None
+    assert normalize_image_url("https://x.test/" + "a" * 1100 + ".jpg") is None
+    assert normalize_image_url("/pics/1.jpg", "https://x.test/post") == "https://x.test/pics/1.jpg"
+
+
+def test_draft_image_is_taken_from_first_cited_source_with_picture():
+    from app.pipeline.generate import _pick_image
+
+    assert _pick_image([{"image_url": None}, {"image_url": "https://a.test/1.jpg"}, {"image_url": "https://a.test/2.jpg"}]) == "https://a.test/1.jpg"
+    assert _pick_image([{"n": 1}]) is None
+
+
+def test_source_dump_detector_flags_sequential_retelling_but_not_synthesis():
+    from app.pipeline.generate import looks_like_source_dump
+
+    def block(n, text):
+        return Block(n=n, item_id=n, source=f"S{n}", title=f"T{n}", url="", sentences=[text], published_at=T0)
+
+    blocks = [
+        block(1, "Хакеры взломали базу данных Пентагона и получили данные более трёх миллионов человек."),
+        block(2, "Злоумышленники девять месяцев имели доступ к системе учёта сотрудников Минобороны США."),
+    ]
+    dump = "[1] Хакеры взломали базу данных Пентагона и получили данные более трёх миллионов человек.\n\n[2] Злоумышленники девять месяцев имели доступ к системе учёта сотрудников Минобороны США."
+    merged = "Хакеры почти девять месяцев имели доступ к кадровой базе Минобороны США, утекли данные миллионов людей [1][2]."
+    assert looks_like_source_dump(dump, blocks) is True
+    assert looks_like_source_dump(merged, blocks) is False
+
+
+def test_interest_rating_parsing_and_review_gate():
+    from app.pipeline.interest import parse_rating
+    from app.pipeline.generate import gate_auto_publish
+
+    assert parse_rating('Вот ответ: {"score": 12, "reason": "важно"}') == (10.0, "важно")
+    assert parse_rating("Оценка 4") == (4.0, "")
+    assert parse_rating("не знаю") is None
+    review = {"passed": False, "reasons": ["Модель сочла сюжет малоинтересным (3 из 10)"]}
+    assert gate_auto_publish(review, "full_auto") is False

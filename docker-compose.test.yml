@@ -1,0 +1,28 @@
+services:
+  test-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: pulse-test-only
+      POSTGRES_DB: pulse_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse -d pulse_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  tests:
+    image: pulse-tests:local
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.test
+    environment:
+      DATABASE_URL: postgresql://pulse:pulse-test-only@test-db:5432/pulse_test
+      SECRET_KEY: isolated-pytest-secret
+      LLM_PROVIDER: stub
+      ALLOW_PRIVATE_URLS: "true"
+    depends_on:
+      test-db:
+        condition: service_healthy
