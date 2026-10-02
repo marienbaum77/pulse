@@ -10,6 +10,7 @@ from .. import db, jobs
 from ..netguard import check_url
 from ..pipeline.ingest import fetch_feed, google_news_search_url
 from ..security import audit, editor, viewer
+from ..textutil import item_hash, utcnow
 
 router = APIRouter(tags=["sources"])
 
@@ -236,5 +237,4 @@ async def import_opml(
         created.append({"id": row["id"], "name": feed["name"], "url": feed["url"]})
     await audit(user, "import", "sources", None, {"opml": True, "created": len(created), "skipped": len(skipped), "errors": len(errors)})
     return {"created": created, "skipped": skipped, "errors": errors}
-
 

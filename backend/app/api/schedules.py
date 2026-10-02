@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 from .. import db, jobs
 from ..scheduler import next_fire
 from ..security import audit, editor, viewer
+from ..textutil import utcnow
 
 router = APIRouter(tags=["schedules"])
 
