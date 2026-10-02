@@ -5,6 +5,7 @@ import logging
 import re
 import time
 
+import asyncio
 import httpx
 import numpy as np
 
@@ -35,6 +36,28 @@ def _provider_error_detail(error: Exception, timeout: float) -> str:
     message = str(error).strip() or "без подробностей"
     return f"{type(error).__name__}: {message}"
 
+
+RETRY_STATUSES = {429, 502, 503, 504}
+RETRY_DELAYS = (1.0, 3.0)
+
+
+async def _post_with_retry(client: httpx.AsyncClient, path: str, payload: dict) -> httpx.Response:
+    """POST с повтором при временных сбоях (429/5xx шлюза, обрыв соединения); таймаут чтения не повторяется."""
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            r = await client.post(path, json=payload)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError):
+            if attempt == len(RETRY_DELAYS):
+                raise
+        else:
+            if r.status_code not in RETRY_STATUSES or attempt == len(RETRY_DELAYS):
+                return r
+            retry_after = r.headers.get("retry-after", "")
+            if retry_after.isdigit():
+                await asyncio.sleep(min(float(retry_after), 10.0))
+                continue
+        await asyncio.sleep(RETRY_DELAYS[attempt])
+    raise AssertionError("unreachable")
 
 async def _log_call(project_id, kind, model, pt, ct, ms, ok, err=None):
     try:
@@ -100,7 +123,7 @@ class OpenAICompatProvider:
             batch = texts[i : i + 8]
             t0 = time.monotonic()
             try:
-                r = await self._embed_client.post("/embeddings", json={"model": self.embed_model, "input": batch})
+                r = await _post_with_retry(self._embed_client, "/embeddings", {"model": self.embed_model, "input": batch})
                 r.raise_for_status()
                 data = sorted(r.json()["data"], key=lambda d: d["index"])
                 vectors.extend(d["embedding"] for d in data)
@@ -118,9 +141,10 @@ class OpenAICompatProvider:
             raise LLMUnavailable("Генерация языковой моделью выключена; задайте LLM_CHAT_ENABLED=true, чтобы включить её")
         t0 = time.monotonic()
         try:
-            r = await self._client.post(
+            r = await _post_with_retry(
+                self._client,
                 "/chat/completions",
-                json={
+                {
                     "model": self.chat_model,
                     "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                     "temperature": temperature,

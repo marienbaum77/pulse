@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -514,3 +514,22 @@ def test_interest_rating_parsing_and_review_gate():
     assert parse_rating("не знаю") is None
     review = {"passed": False, "reasons": ["Модель сочла сюжет малоинтересным (3 из 10)"]}
     assert gate_auto_publish(review, "full_auto") is False
+
+
+async def test_post_with_retry_retries_transient_gateway_errors(monkeypatch):
+    import httpx
+    from app import providers
+
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(503 if len(calls) < 3 else 200, json={"ok": True})
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(providers.asyncio, "sleep", no_sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://x") as client:
+        r = await providers._post_with_retry(client, "/p", {})
+    assert r.status_code == 200 and len(calls) == 3

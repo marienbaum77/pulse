@@ -82,6 +82,7 @@ async def open_pool() -> None:
         max_size=12,
         kwargs={"row_factory": dict_row},
         configure=_configure,
+        check=AsyncConnectionPool.check_connection,
         open=False,
     )
     await pool.open(wait=True, timeout=30)
