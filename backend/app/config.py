@@ -1,5 +1,4 @@
 from functools import lru_cache
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,16 +12,21 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     session_hours: int = 12
 
-    # stub — без внешних моделей (тесты / экстрактивный режим); openai — любой OpenAI-совместимый сервер (Ollama, vLLM, облако)
-    llm_provider: str = "stub"
-    llm_base_url: str = "http://localhost:11434/v1"
-    llm_api_key: str = "ollama"
-    llm_model: str = "qwen2.5:7b-instruct"
+    # openai — любой OpenAI-совместимый сервер (Groq, Ollama, vLLM, облако); stub — без текстовой модели.
+    llm_provider: str = "openai"
+    llm_base_url: str = "https://api.groq.com/openai/v1"
+    llm_api_key: str = ""
+    llm_model: str = "qwen/qwen3.8-27b"
+    llm_chat_enabled: bool = True
     embed_model: str = "bge-m3"
-    # Эмбеддинги можно брать с другого сервера, чем текст (например, embeddings — локальный Ollama, chat — облачный API). Пусто — как у LLM_*.
-    embed_base_url: str = ""
+    # Эмбеддинги можно брать с другого сервера, чем текст (например, локальный Ollama + облачный chat API).
+    embed_base_url: str = "http://ollama:11434/v1"
     embed_api_key: str = ""
     llm_timeout: float = 180.0
+
+    image_cache_dir: str = ""  # в docker-compose это общий том для api и worker
+    image_cache_max_mb: int = 500
+    image_cache_max_age_days: int = 30
 
     allow_private_urls: bool = False
     telegram_bot_token: str = ""

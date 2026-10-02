@@ -1,15 +1,17 @@
-from datetime import datetime, timedelta, timezone
+﻿from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import httpx
 import numpy as np
+import pytest
 
 from app.pipeline import scoring
 from app.pipeline.clustering_core import Cluster, OnlineClusterer
 from app.pipeline.context import Block
 from app.pipeline.generate import automatic_review, check_text, decide_use_llm, extractive_text, gate_auto_publish, normalize_generated_post, parse_output
-from app.api.core import parse_opml
+from app.api.sources import parse_opml
 from app.publisher import classify_exception, classify_telegram, render_telegram_html, sources_footer
-from app.providers import _provider_error_detail
+from app.providers import LLMUnavailable, OpenAICompatProvider, _provider_error_detail
 from app.textutil import normalize_url, numbers_in, split_sentences, strip_citations, strip_html, strip_source_footer, truncate
 
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -34,6 +36,16 @@ def test_online_clusterer_respects_window():
     first, _ = c.add(vec(1, 0, 0), T0)
     second, _ = c.add(vec(1, 0, 0), T0 + timedelta(hours=30))
     assert first is not second  # тот же вектор, но кластер вышел из окна
+
+
+def test_search_result_threshold_splits_loosely_related_articles():
+    from app.pipeline.process import SEARCH_SIM_THRESHOLD
+
+    c = OnlineClusterer(SEARCH_SIM_THRESHOLD, timedelta(hours=48))
+    first, _ = c.add(vec(1, 0), T0)
+    second, similarity = c.add(vec(0.8, 0.6), T0 + timedelta(hours=1))
+    assert similarity == pytest.approx(0.8)
+    assert first is not second
 
 
 def test_cluster_roundtrip_through_db_representation():
@@ -111,6 +123,28 @@ def test_provider_error_detail_includes_read_timeout_limit_and_http_body():
     assert "model context too large" in _provider_error_detail(error, 180)
 
 
+async def test_chat_generation_can_be_disabled_while_embeddings_remain_configured(monkeypatch):
+    settings = SimpleNamespace(
+        llm_chat_enabled=False,
+        llm_model="qwen2.5:7b-instruct",
+        embed_model="bge-m3",
+        llm_timeout=1,
+        llm_base_url="http://ollama:11434/v1",
+        llm_api_key="ollama",
+        embed_base_url="",
+        embed_api_key="",
+    )
+    monkeypatch.setattr("app.providers.get_settings", lambda: settings)
+    provider = OpenAICompatProvider()
+    try:
+        assert provider.supports_chat is False
+        assert provider._embed_client is provider._client
+        with pytest.raises(LLMUnavailable, match="LLM_CHAT_ENABLED=true"):
+            await provider.chat("system", "user")
+    finally:
+        await provider._client.aclose()
+
+
 def test_render_telegram_escapes_and_limits():
     cites = [{"n": 1, "url": 'https://e.com/?a="1"&b=2', "source": "S<1>"}]
     html = render_telegram_html("A [1] <b>&", "x < y & z " * 600, cites, limit=1000)
@@ -183,6 +217,42 @@ def test_automatic_review_blocks_short_unenriched_and_wrong_language_posts():
     wrong_language = automatic_review("Update", english, [{"n": 1, "excerpt": english}], {}, 900)
     assert any(reason.startswith("Текст, вероятно, не на заданном языке") for reason in wrong_language["reasons"])
     assert gate_auto_publish(wrong_language, "full_auto") is False
+
+
+def test_automatic_review_does_not_block_multisource_post_for_one_short_rss_source():
+    citations = [
+        {"n": 1, "title": "Короткая заметка", "excerpt": "Короткий анонс.", "article_content_status": "failed", "content_length": 12},
+        {"n": 2, "title": "Полная статья", "excerpt": "Подробный текст статьи." * 20, "article_content_status": "done", "content_length": 1200},
+    ]
+    body = "Подробный материал подтверждён источниками и описывает основные факты достаточно полно. [1][2]"
+    review = automatic_review(
+        "Подробный материал",
+        body,
+        citations,
+        {"citation_coverage": 1.0},
+        900,
+    )
+    assert "Полный текст короткой RSS-заметки не удалось получить" not in review["reasons"]
+
+
+async def test_manual_schedule_run_does_not_force_editor_review(monkeypatch):
+    from app.api import schedules
+
+    captured = {}
+
+    async def get_schedule(_sql, _params):
+        return {"project_id": 7, "kind": "post", "top_n": 1}
+
+    async def enqueue(_kind, payload):
+        captured.update(payload)
+        return 123
+
+    monkeypatch.setattr(schedules.db, "fetchone", get_schedule)
+    monkeypatch.setattr(schedules.jobs, "enqueue", enqueue)
+    result = await schedules.run_schedule(9, {"id": 1})
+
+    assert result == {"job_id": 123}
+    assert captured == {"project_id": 7, "kind": "post", "top_n": 1, "user_id": 1}
 
 
 def test_gate_auto_publish_modes():
@@ -263,8 +333,26 @@ def test_decide_use_llm_auto():
         Block(2, 2, "B", "t", "", ["Факт два про то же событие."], T0),
     ]
     assert decide_use_llm("auto", multi, P()) == (True, "llm")
+    same_source = [
+        Block(1, 1, "A", "t", "", ["Факт один."], T0),
+        Block(2, 2, "A", "t", "", ["Факт два."], T0),
+    ]
+    assert decide_use_llm("auto", same_source, P()) == (False, "extractive")
     long = [Block(1, 1, "A", "t", "", ["x" * 700], T0)]
     assert decide_use_llm("auto", long, P()) == (False, "extractive")
+
+
+def test_default_settings_use_groq_chat_and_local_embeddings(monkeypatch):
+    from app.config import Settings
+
+    for key in ("LLM_PROVIDER", "LLM_CHAT_ENABLED", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "EMBED_BASE_URL"):
+        monkeypatch.delenv(key, raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.llm_provider == "openai"
+    assert settings.llm_chat_enabled is True
+    assert settings.llm_base_url == "https://api.groq.com/openai/v1"
+    assert settings.llm_model == "qwen/qwen3.8-27b"
+    assert settings.embed_base_url == "http://ollama:11434/v1"
 
 
 def test_language_mismatch_forces_translation_even_for_single_source_and_extractive_mode():
@@ -328,6 +416,29 @@ def test_extractive_text_keeps_later_facts_after_duplicate_lead():
 
 
 # ---------- картинки ----------
+def test_google_news_search_url_uses_project_language_and_encodes_query():
+    from urllib.parse import parse_qs, urlsplit
+
+    from app.pipeline.ingest import google_news_search_url
+
+    url = google_news_search_url('"robotics" site:arxiv.org', "ru-RU")
+    parsed = urlsplit(url)
+    params = parse_qs(parsed.query)
+    assert parsed.scheme == "https" and parsed.netloc == "news.google.com"
+    assert parsed.path == "/rss/search"
+    assert params == {"q": ['"robotics" site:arxiv.org'], "hl": ["ru"], "gl": ["RU"], "ceid": ["RU:ru"]}
+
+
+def test_parse_google_news_feed_keeps_publisher():
+    from app.pipeline.ingest import parse_feed
+
+    feed = b"""<?xml version="1.0"?><rss version="2.0"><channel><item>
+      <title>Article title</title><link>https://news.google.com/rss/articles/example</link>
+      <source url="https://example.com">Example News</source>
+    </item></channel></rss>"""
+    assert parse_feed(feed)[0]["publisher_name"] == "Example News"
+
+
 def test_parse_feed_extracts_image_from_media_enclosure_and_body():
     from app.pipeline.ingest import parse_feed
 
@@ -349,6 +460,26 @@ def test_normalize_image_url_rejects_unsafe_and_junk():
     assert normalize_image_url("https://x.test/icon.svg") is None
     assert normalize_image_url("https://x.test/" + "a" * 1100 + ".jpg") is None
     assert normalize_image_url("/pics/1.jpg", "https://x.test/post") == "https://x.test/pics/1.jpg"
+
+
+async def test_image_is_downloaded_once_and_served_from_disk_cache(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app import images
+
+    monkeypatch.setattr(images, "get_settings", lambda: SimpleNamespace(image_cache_dir=str(tmp_path)))
+    calls = 0
+
+    async def download(_url):
+        nonlocal calls
+        calls += 1
+        return b"fake-image", "image/png"
+
+    monkeypatch.setattr(images, "download_image", download)
+    url = "https://cache-test.invalid/image.png"
+    assert await images.get_image(url) == (b"fake-image", "image/png")
+    assert await images.get_image(url) == (b"fake-image", "image/png")
+    assert calls == 1
 
 
 def test_draft_image_is_taken_from_first_cited_source_with_picture():

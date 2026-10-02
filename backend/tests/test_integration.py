@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from psycopg.types.json import Jsonb
 
 from app import db, jobs, publisher, scheduler
-from app.api.content import generate_from_cluster
+from app.api.content import generate_from_cluster, regenerate_draft
 from app.pipeline import drafts_service, generate, ingest, process  # noqa: F401  (регистрируют обработчики)
 from app.pipeline.generate import run_generation
 from app.pipeline.ingest import import_manual
@@ -27,6 +27,53 @@ async def _pipeline(threshold=0.35):
     await import_manual(pid, load_demo())
     await process_project(pid)
     return pid
+
+
+async def test_reclaim_expired_jobs_does_not_requeue_duplicate_dedupe_key():
+    stale = await db.fetchone(
+        "INSERT INTO jobs(kind, payload, dedupe_key, status, locked_until) "
+        "VALUES ('process_project', '{}', 'process:expired-duplicate', 'running', now() - interval '15 minutes') RETURNING id"
+    )
+    queued_id = await jobs.enqueue(
+        "process_project", {"project_id": 1}, dedupe_key="process:expired-duplicate"
+    )
+    standalone = await db.fetchone(
+        "INSERT INTO jobs(kind, payload, dedupe_key, status, locked_until) "
+        "VALUES ('process_project', '{}', 'process:expired-alone', 'running', now() - interval '15 minutes') RETURNING id"
+    )
+
+    assert queued_id is not None
+    assert await jobs.reclaim_expired() == 2
+    rows = await db.fetchall(
+        "SELECT id, status FROM jobs WHERE id = ANY(%s) ORDER BY id",
+        ([stale["id"], queued_id, standalone["id"]],),
+    )
+    assert rows == [
+        {"id": stale["id"], "status": "failed"},
+        {"id": queued_id, "status": "queued"},
+        {"id": standalone["id"], "status": "queued"},
+    ]
+
+
+async def test_expedite_queued_job_instead_of_suppressing_manual_poll():
+    job_id = await jobs.enqueue("ingest_source", {"source_id": 42}, dedupe_key="ingest:42")
+    assert job_id is not None
+    await db.execute("UPDATE jobs SET run_at = now() + interval '1 hour' WHERE id = %s", (job_id,))
+
+    assert await jobs.expedite_queued("ingest:42") == job_id
+    row = await db.fetchone("SELECT run_at <= now() AS due FROM jobs WHERE id = %s", (job_id,))
+    assert row["due"] is True
+
+
+async def test_source_fetches_are_claimed_before_expensive_project_processing():
+    await jobs.enqueue("process_project", {"project_id": 1}, dedupe_key="process:priority")
+    source_job = await jobs.enqueue("ingest_source", {"source_id": 42}, dedupe_key="ingest:priority")
+
+    claimed = await jobs.claim()
+
+    assert source_job is not None
+    assert claimed["id"] == source_job
+    assert claimed["kind"] == "ingest_source"
 
 
 # ---------- конвейер ----------
@@ -231,7 +278,41 @@ async def test_reject_returns_clusters_to_work():
     [did] = await run_generation({"project_id": pid, "kind": "post", "top_n": 1})
     d = await db.fetchone("SELECT cluster_ids FROM drafts WHERE id = %s", (did,))
     assert await drafts_service.reject(did) is True
-    assert (await db.fetchone("SELECT state FROM clusters WHERE id = %s", (d["cluster_ids"][0],)))["state"] == "open"
+    assert (await db.fetchone("SELECT state FROM clusters WHERE id = %s", (d["cluster_ids"][0],)))["state"] == "excluded"
+
+
+async def test_regenerating_a_rejected_draft_explicitly_reopens_its_story():
+    pid = await _pipeline()
+    [did] = await run_generation({"project_id": pid, "kind": "post", "top_n": 1})
+    draft = await db.fetchone("SELECT cluster_ids FROM drafts WHERE id = %s", (did,))
+    assert await drafts_service.reject(did) is True
+
+    queued = await regenerate_draft(did, {"id": 1})
+
+    assert "job_id" in queued
+    assert (await db.fetchone("SELECT state FROM clusters WHERE id = %s", (draft["cluster_ids"][0],)))["state"] == "open"
+
+
+async def test_approving_exact_duplicate_text_cancels_second_publication():
+    pid = await make_project()
+    first = await db.fetchone(
+        "INSERT INTO drafts(project_id, title, body, status) VALUES (%s, 'Повтор', 'Одинаковый текст поста', 'pending_review') RETURNING id",
+        (pid,),
+    )
+    second = await db.fetchone(
+        "INSERT INTO drafts(project_id, title, body, status) VALUES (%s, 'Повтор', 'Одинаковый текст поста', 'pending_review') RETURNING id",
+        (pid,),
+    )
+
+    assert await drafts_service.approve(first["id"], None) is True
+    assert await drafts_service.approve(second["id"], None) is True
+
+    rows = await db.fetchall(
+        "SELECT p.draft_id, p.status, p.error FROM publications p WHERE p.draft_id = ANY(%s) ORDER BY p.draft_id",
+        ([first["id"], second["id"]],),
+    )
+    assert [row["status"] for row in rows] == ["pending", "cancelled"]
+    assert "Точный повтор текста" in rows[1]["error"]
 
 
 async def test_clear_drafts_preserves_approved_and_generating_entries():
@@ -665,6 +746,7 @@ async def test_embeddings_and_chat_can_use_different_servers(monkeypatch):
         s = get_settings()
         monkeypatch.setattr(s, "llm_base_url", c.url + "/v1")
         monkeypatch.setattr(s, "llm_api_key", "chat-key")
+        monkeypatch.setattr(s, "llm_chat_enabled", True)
         monkeypatch.setattr(s, "embed_base_url", e.url + "/v1")
         monkeypatch.setattr(s, "embed_api_key", "embed-key")
         prov = OpenAICompatProvider()
@@ -713,9 +795,15 @@ async def test_repeated_feed_fetch_backfills_image_without_counting_as_new_item(
     pid = await make_project()
     src = await db.fetchone("INSERT INTO sources(project_id, type, name, url) VALUES (%s, 'rss', 'S', 'https://s.test/rss') RETURNING id", (pid,))
     entry = {"title": "Новость", "url": "https://s.test/1", "text": "текст", "published_at": utcnow()}
-    assert await ingest.insert_items(pid, src["id"], [entry]) == 1
+    assert (await ingest.insert_items(pid, src["id"], [entry])).inserted == 1
     assert (await db.fetchone("SELECT image_url FROM items WHERE project_id = %s", (pid,)))["image_url"] is None
-    assert await ingest.insert_items(pid, src["id"], [{**entry, "image_url": "https://cdn.test/a.jpg"}]) == 0
+    assert (await ingest.insert_items(pid, src["id"], [{**entry, "image_url": "https://cdn.test/a.jpg"}])).inserted == 0
     assert (await db.fetchone("SELECT image_url FROM items WHERE project_id = %s", (pid,)))["image_url"] == "https://cdn.test/a.jpg"
-    assert await ingest.insert_items(pid, src["id"], [{**entry, "image_url": "https://cdn.test/other.jpg"}]) == 0
+    assert (await ingest.insert_items(pid, src["id"], [{**entry, "image_url": "https://cdn.test/other.jpg"}])).inserted == 0
     assert (await db.fetchone("SELECT image_url FROM items WHERE project_id = %s", (pid,)))["image_url"] == "https://cdn.test/a.jpg"
+    await db.execute("DELETE FROM sources WHERE id = %s", (src["id"],))
+    replacement = await db.fetchone("INSERT INTO sources(project_id, type, name, url) VALUES (%s, 'rss', 'Search', 'https://search.test/rss') RETURNING id", (pid,))
+    result = await ingest.insert_items(pid, replacement["id"], [{**entry, "publisher_name": "The Example"}])
+    assert result.inserted == 0 and result.updated == 1
+    attached = await db.fetchone("SELECT source_id, publisher_name FROM items WHERE project_id = %s", (pid,))
+    assert attached == {"source_id": replacement["id"], "publisher_name": "The Example"}

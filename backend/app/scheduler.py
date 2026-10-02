@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from croniter import croniter
 from psycopg.types.json import Jsonb
 
-from . import db, jobs, publisher
+from . import db, images, jobs, publisher
 from .config import get_settings
 from .pipeline import generate
 from .textutil import utcnow
@@ -60,7 +60,8 @@ async def poll_sources() -> int:
 
 
 async def maintenance() -> None:
-    days = get_settings().retention_days
+    settings = get_settings()
+    days = settings.retention_days
     await db.execute("DELETE FROM items WHERE published_at < now() - make_interval(days => %s)", (days,))
     await db.execute(
         "DELETE FROM clusters c WHERE c.state IN ('closed', 'excluded') AND c.last_seen < now() - make_interval(days => %s) "
@@ -69,6 +70,11 @@ async def maintenance() -> None:
     )
     await db.execute("DELETE FROM jobs WHERE status IN ('done', 'failed') AND finished_at < now() - interval '7 days'")
     await db.execute("DELETE FROM llm_calls WHERE created_at < now() - interval '30 days'")
+    await asyncio.to_thread(
+        images.prune_cache,
+        settings.image_cache_max_age_days,
+        settings.image_cache_max_mb * 1024 * 1024,
+    )
     # пересчёт свежести и закрытие устаревших сюжетов, даже если новых материалов нет
     for p in await db.fetchall("SELECT id FROM projects WHERE active"):
         await jobs.enqueue("process_project", {"project_id": p["id"]}, dedupe_key=f"process:{p['id']}")

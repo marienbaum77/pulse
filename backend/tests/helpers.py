@@ -24,7 +24,7 @@ async def make_project(threshold: float = 0.35, channel: bool = True, **over) ->
             threshold,
             Jsonb(DEFAULT_WEIGHTS),
             over.get("min_items", 2),
-            over.get("generation_mode", "extractive"),
+            over.get("generation_mode", "llm"),
             over.get("publish_mode", "review"),
             over.get("auto_retry_unknown", False),
         ),

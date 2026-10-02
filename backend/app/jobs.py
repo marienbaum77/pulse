@@ -41,12 +41,24 @@ def handler(kind: str):
 
 async def enqueue(kind: str, payload: dict, dedupe_key: str | None = None, delay_seconds: float = 0) -> int | None:
     row = await db.fetchone(
-        "INSERT INTO jobs(kind, payload, dedupe_key, run_at) VALUES (%s, %s, %s, now() + make_interval(secs => %s)) "
+        "WITH queue_lock AS MATERIALIZED (SELECT pg_advisory_xact_lock(747002) WHERE %s::text IS NOT NULL) "
+        "INSERT INTO jobs(kind, payload, dedupe_key, run_at) "
+        "SELECT %s, %s, %s, now() + make_interval(secs => %s) FROM (VALUES (1)) AS seed(n) "
+        "LEFT JOIN queue_lock ON true "
         "ON CONFLICT (dedupe_key) WHERE status = 'queued' AND dedupe_key IS NOT NULL DO NOTHING RETURNING id",
-        (kind, Jsonb(payload), dedupe_key, delay_seconds),
+        (dedupe_key, kind, Jsonb(payload), dedupe_key, delay_seconds),
     )
     if row and kind == "generate":
         await events.notify("generation", project_id=payload.get("project_id"))
+    return row["id"] if row else None
+
+
+async def expedite_queued(dedupe_key: str) -> int | None:
+    """Make an already queued deduplicated job eligible immediately."""
+    row = await db.fetchone(
+        "UPDATE jobs SET run_at = LEAST(run_at, now()) WHERE dedupe_key = %s AND status = 'queued' RETURNING id",
+        (dedupe_key,),
+    )
     return row["id"] if row else None
 
 
@@ -86,7 +98,7 @@ async def claim(include_kinds: tuple[str, ...] | None = None, exclude_kinds: tup
         "UPDATE jobs SET status = 'running', attempts = attempts + 1, locked_until = now() + interval '10 minutes' "
         f"WHERE id = (SELECT id FROM jobs WHERE {where} "
         "ORDER BY CASE kind WHEN 'enrich_articles' THEN 0 WHEN 'generate' THEN 1 "
-        "WHEN 'process_project' THEN 2 WHEN 'ingest_source' THEN 3 ELSE 4 END, run_at, id "
+        "WHEN 'ingest_source' THEN 2 WHEN 'process_project' THEN 3 ELSE 4 END, run_at, id "
         "FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *",
         kind_params,
     )
@@ -119,7 +131,22 @@ async def defer(job: dict, delay: float) -> None:
 
 
 async def reclaim_expired() -> int:
-    return await db.execute("UPDATE jobs SET status = 'queued', locked_until = NULL WHERE status = 'running' AND locked_until < now()")
+    return await db.execute(
+        "WITH queue_lock AS MATERIALIZED (SELECT pg_advisory_xact_lock(747002)), "
+        "expired AS MATERIALIZED ("
+        "SELECT j.id, j.dedupe_key FROM jobs j CROSS JOIN queue_lock "
+        "WHERE j.status = 'running' AND j.locked_until < now() FOR UPDATE OF j"
+        "), classified AS MATERIALIZED ("
+        "SELECT e.id, EXISTS (SELECT 1 FROM jobs q WHERE q.status = 'queued' "
+        "AND q.dedupe_key = e.dedupe_key AND e.dedupe_key IS NOT NULL) AS superseded "
+        "FROM expired e"
+        ") "
+        "UPDATE jobs j SET status = CASE WHEN c.superseded THEN 'failed' ELSE 'queued' END, "
+        "finished_at = CASE WHEN c.superseded THEN now() ELSE NULL END, locked_until = NULL, "
+        "last_error = CASE WHEN c.superseded THEN concat_ws('; ', NULLIF(j.last_error, ''), "
+        "'Expired task superseded by a queued task with the same dedupe key') ELSE j.last_error END "
+        "FROM classified c WHERE j.id = c.id"
+    )
 
 
 async def run_one(include_kinds: tuple[str, ...] | None = None, exclude_kinds: tuple[str, ...] | None = None) -> bool:

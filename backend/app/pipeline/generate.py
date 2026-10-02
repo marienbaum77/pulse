@@ -13,14 +13,12 @@ from ..textutil import numbers_in, split_sentences, strip_citations, strip_sourc
 from . import drafts_service
 from .context import Block, build_blocks
 from .ingest import MIN_RSS_TEXT_CHARS
-from .interest import rank_by_interest
 from .process import get_project, refresh_clusters, select_clusters
 
 log = logging.getLogger("pulse.generate")
 ENRICH_WAIT_SECONDS = 600
 # Половина фактических предложений со ссылкой — граница, ниже которой текст явно «плавает»; 80% на практике блокировало почти всё
 MIN_CITATION_COVERAGE = 0.5
-INTEREST_MIN = 5.0  # оценка интересности сюжета (0–10), ниже которой автопубликация ждёт решения редактора
 DetectorFactory.seed = 0
 
 DEFAULT_SYSTEM = """Ты — редактор новостного канала. Язык текста: {language}. Тон: {tone}. Тематика канала: {topic}.
@@ -47,7 +45,7 @@ def render_system(project: dict, max_length: int) -> str:
 
 
 def blocks_prompt(blocks: list[Block], language: str) -> str:
-    parts = [f"[{b.n}] {b.source}, {b.published_at:%d.%m %H:%M}. {b.title}\n{b.text}" for b in blocks]
+    parts = [f"[{b.n}] {b.source}, {b.published_at:%d.%m %H:%M}. {b.output_title}\n{b.output_text}" for b in blocks]
     return (
         "ИСТОЧНИКИ:\n\n"
         + "\n\n".join(parts)
@@ -63,7 +61,7 @@ def looks_like_source_dump(body: str, blocks: list[Block]) -> bool:
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
     if sum(1 for p in paragraphs if re.match(r"^\[\d+\]", p)) >= 2:
         return True
-    source_text = " ".join(" ".join(words(f"{b.title}. {b.text}")) for b in blocks)
+    source_text = " ".join(" ".join(words(f"{b.output_title}. {b.output_text}")) for b in blocks)
     sentences = [" ".join(words(strip_citations(x))) for x in split_sentences(body)]
     sentences = [x for x in sentences if len(x.split()) >= 5]
     if len(sentences) < 3:
@@ -202,7 +200,7 @@ def automatic_review(
         reasons.append(f"Текст слишком короткий (меньше {_MIN_PUBLISHABLE_BODY_CHARS} символов)")
     if not citations:
         reasons.append("Нет источников")
-    if any(
+    if len(citations) == 1 and any(
         c.get("article_content_status") == "failed"
         and c.get("content_length", MIN_RSS_TEXT_CHARS) < MIN_RSS_TEXT_CHARS
         for c in citations
@@ -216,9 +214,6 @@ def automatic_review(
         reasons.append("Есть ссылки на отсутствующие источники")
     if checks.get("citation_coverage", 0) < MIN_CITATION_COVERAGE:
         reasons.append(f"Покрытие предложений ссылками на источники ниже {round(MIN_CITATION_COVERAGE * 100)}%")
-    if interest is not None and interest < INTEREST_MIN:
-        why = f": {interest_reason}" if interest_reason else ""
-        reasons.append(f"Модель сочла сюжет малоинтересным ({interest:g} из 10){why}")
     if kind == "post" and checks.get("length", 0) > max_length:
         reasons.append(f"Превышен лимит длины ({max_length} символов)")
     return {"passed": not reasons, "reasons": reasons}
@@ -229,7 +224,7 @@ def extractive_text(blocks: list[Block], limit: int, max_sentences: int = 4) -> 
     Если несколько источников сообщают одно и то же, предложение берётся один раз, а ссылки на все источники ставятся вместе."""
     chosen: list[tuple[str, list[int], set[str]]] = []
     for b in blocks:
-        for sentence in b.sentences:
+        for sentence in b.output_sentences:
             ws = set(words(sentence))
             if not ws:
                 continue
@@ -264,18 +259,13 @@ def _pick_image(citations: list[dict]) -> str | None:
     return next((c["image_url"] for c in citations if c.get("image_url")), None)
 
 
-# Пороги режима «авто»: LLM имеет смысл, когда есть что синтезировать.
-_AUTO_MIN_SOURCES = 2
 _MIN_PUBLISHABLE_BODY_CHARS = 80
 
 
 def decide_use_llm(mode: str, blocks: list[Block], provider, language: str = "ru") -> tuple[bool, str]:
     """Возвращает (вызывать ли LLM, фактический режим для метаданных)."""
     supports = getattr(provider, "supports_chat", False)
-    translation_needed = _language_mismatch(
-        " ".join(f"{block.title}. {block.text}" for block in blocks),
-        language,
-    )
+    translation_needed = _language_mismatch(" ".join(f"{block.output_title}. {block.output_text}" for block in blocks), language)
     if not supports:
         return False, "extractive"
     if translation_needed:
@@ -284,9 +274,7 @@ def decide_use_llm(mode: str, blocks: list[Block], provider, language: str = "ru
         return False, "extractive"
     if mode == "llm":
         return True, "llm"
-    # auto: одна публикация не даёт надёжной опоры для синтеза — используем её текст напрямую.
-    n_sources = len({b.source for b in blocks})
-    if n_sources >= _AUTO_MIN_SOURCES:
+    if len({block.source for block in blocks}) >= 2:
         return True, "llm"
     return False, "extractive"
 
@@ -309,8 +297,9 @@ async def generate_for_clusters(project: dict, cluster_ids: list[int], kind: str
             continue
         n += len(blocks)
         all_blocks.extend(blocks)
-        block_text = " ".join(f"{block.title}. {block.text}" for block in blocks)
-        translation_required = translation_required or _language_mismatch(block_text, project["language"])
+        source_text = " ".join(f"{block.title}. {block.text}" for block in blocks)
+        needs_translation = _language_mismatch(source_text, project["language"])
+        translation_required = translation_required or needs_translation
         use_llm, decided = decide_use_llm(mode, blocks, provider, project["language"])
         decided_modes.append(decided)
         if use_llm:
@@ -407,11 +396,6 @@ async def _create_and_fill(
     prev_states: dict,
     force_review: bool = False,
 ) -> int:
-    interest, interest_reason = None, ""
-    if kind == "post" and len(ids) == 1:
-        row_i = await db.fetchone("SELECT interest, interest_reason FROM clusters WHERE id = %s", (ids[0],))
-        if row_i and row_i["interest"] is not None:
-            interest, interest_reason = float(row_i["interest"]), row_i["interest_reason"] or ""
     initial_title = await db.fetchone(
         "SELECT string_agg(title, ' · ' ORDER BY score DESC NULLS LAST, id) AS title FROM clusters WHERE id = ANY(%s)",
         (ids,),
@@ -441,8 +425,6 @@ async def _create_and_fill(
         project["max_length"],
         kind,
         project["language"],
-        interest=interest,
-        interest_reason=interest_reason,
     )
     review["auto_publish_enabled"] = (
         not force_review and project["publish_mode"] in ("auto", "full_auto")
@@ -487,8 +469,8 @@ async def run_generation(payload: dict) -> list[int]:
             if got:
                 await refresh_clusters(project)
         top_n = int(payload.get("top_n", 1))
-        candidates = await select_clusters(project, top_n * 3)
-        ids = [c["id"] for c in await rank_by_interest(project, provider, candidates, top_n)]
+        candidates = await select_clusters(project, top_n)
+        ids = [c["id"] for c in candidates]
     if not ids:
         await events.notify("pipeline", project_id=project["id"], stage="nothing_to_publish")
         return []

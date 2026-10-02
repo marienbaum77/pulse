@@ -1,11 +1,22 @@
-"""Картинки материалов. В БД хранится только URL (несколько десятков байт на материал), сами файлы не сохраняются:
-интерфейс получает их через прокси API (с проверкой SSRF и лимитом размера), Telegram — прямой загрузкой файла."""
+"""Картинки материалов. В БД хранится только URL (несколько десятков байт на материал); сами файлы при первом запросе
+скачиваются с сайта-источника (проверка SSRF, лимит размера) и кладутся в дисковый кеш. Интерфейс получает их через прокси API,
+Telegram — загрузкой файла; повторные показы и публикация берут картинку из кеша, а не с чужого сайта."""
+import asyncio
+import hashlib
+import logging
+import os
 import re
+import tempfile
+import time
+from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from .config import get_settings
 from .netguard import check_url
+
+log = logging.getLogger("pulse.images")
 
 MAX_IMAGE_URL = 1000
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -89,3 +100,102 @@ async def download_image(url: str) -> tuple[bytes, str]:
                         raise ValueError("Картинка больше 5 МБ")
                 return bytes(data), ctype
     raise ValueError("Слишком много редиректов")
+
+
+_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
+_TYPE = {ext: ctype for ctype, ext in _EXT.items()}
+_FAILED_TTL = 600.0
+_failed: dict[str, float] = {}  # url -> когда сбой истечёт: не долбим недоступный сайт при каждом показе страницы
+
+
+class ImageUnavailable(Exception):
+    pass
+
+
+def image_key(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()
+
+
+def cache_dir() -> Path:
+    configured = get_settings().image_cache_dir
+    return Path(configured) if configured else Path(tempfile.gettempdir()) / "pulse-images"
+
+
+def _cache_file(url: str) -> Path | None:
+    key = image_key(url)
+    for ext in _TYPE:
+        path = cache_dir() / key[:2] / f"{key}.{ext}"
+        if path.is_file():
+            return path
+    return None
+
+
+def _read_cached(url: str) -> tuple[bytes, str] | None:
+    path = _cache_file(url)
+    if path is None:
+        return None
+    try:
+        data = path.read_bytes()
+        os.utime(path)  # «использовано недавно»: чистка удаляет прежде всего давно не нужные файлы
+    except OSError:
+        return None
+    return data, _TYPE[path.suffix.lstrip(".")]
+
+
+def _write_cached(url: str, data: bytes, ctype: str) -> None:
+    key = image_key(url)
+    folder = cache_dir() / key[:2]
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = folder / f"{key}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+        tmp.write_bytes(data)
+        os.replace(tmp, folder / f"{key}.{_EXT[ctype]}")
+    except OSError:
+        log.warning("не удалось записать картинку в кеш %s", cache_dir(), exc_info=True)
+
+
+async def get_image(url: str) -> tuple[bytes, str]:
+    """Картинка из дискового кеша или, если её там нет, с исходного сайта (и тогда она сохраняется в кеш)."""
+    cached = await asyncio.to_thread(_read_cached, url)
+    if cached:
+        return cached
+    if _failed.get(url, 0.0) > time.monotonic():
+        raise ImageUnavailable(url)
+    try:
+        data, ctype = await download_image(url)
+    except Exception as e:
+        _failed[url] = time.monotonic() + _FAILED_TTL
+        if len(_failed) > 2000:
+            now = time.monotonic()
+            for key in [k for k, until in _failed.items() if until < now]:
+                del _failed[key]
+        raise ImageUnavailable(url) from e
+    await asyncio.to_thread(_write_cached, url, data, ctype)
+    return data, ctype
+
+
+def prune_cache(max_age_days: int, max_bytes: int) -> int:
+    """Удаляет файлы, к которым не обращались дольше max_age_days, затем самые старые, пока кеш не уложится в max_bytes."""
+    root = cache_dir()
+    if not root.is_dir():
+        return 0
+    files = []
+    for path in root.rglob("*"):
+        try:
+            if path.is_file():
+                st = path.stat()
+                files.append((st.st_mtime, st.st_size, path))
+        except OSError:
+            continue
+    removed, total = 0, sum(size for _, size, _ in files)
+    cutoff = time.time() - max_age_days * 86400
+    for mtime, size, path in sorted(files):
+        if mtime >= cutoff and total <= max_bytes:
+            break
+        try:
+            path.unlink()
+            removed += 1
+            total -= size
+        except OSError:
+            continue
+    return removed

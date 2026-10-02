@@ -84,6 +84,7 @@ class OpenAICompatProvider:
         s = get_settings()
         self.chat_model = s.llm_model
         self.embed_model = s.embed_model
+        self.supports_chat = s.llm_chat_enabled
         timeout = httpx.Timeout(s.llm_timeout, connect=10.0)
         self._client = httpx.AsyncClient(base_url=s.llm_base_url.rstrip("/"), headers={"Authorization": f"Bearer {s.llm_api_key}"}, timeout=timeout)
         if s.embed_base_url:
@@ -95,8 +96,8 @@ class OpenAICompatProvider:
 
     async def embed(self, texts: list[str], project_id: int | None = None) -> np.ndarray:
         vectors: list[list[float]] = []
-        for i in range(0, len(texts), 32):
-            batch = texts[i : i + 32]
+        for i in range(0, len(texts), 8):
+            batch = texts[i : i + 8]
             t0 = time.monotonic()
             try:
                 r = await self._embed_client.post("/embeddings", json={"model": self.embed_model, "input": batch})
@@ -113,6 +114,8 @@ class OpenAICompatProvider:
         return np.asarray(vectors, dtype=np.float32)
 
     async def chat(self, system: str, user: str, *, max_tokens: int = 700, temperature: float = 0.3, project_id: int | None = None) -> str:
+        if not self.supports_chat:
+            raise LLMUnavailable("Генерация языковой моделью выключена; задайте LLM_CHAT_ENABLED=true, чтобы включить её")
         t0 = time.monotonic()
         try:
             r = await self._client.post(
@@ -193,7 +196,10 @@ async def refresh_provider() -> object:
     over = await load_runtime_overrides()
     chat = over.get("llm_model") or s.llm_model
     embed = over.get("embed_model") or s.embed_model
-    fp = f"{s.llm_provider}|{chat}|{embed}|{s.llm_base_url}|{s.embed_base_url}"
+    fp = (
+        f"{s.llm_provider}|{s.llm_chat_enabled}|{chat}|{embed}|{s.llm_base_url}|"
+        f"{s.embed_base_url}|{s.llm_api_key}|{s.embed_api_key}"
+    )
     if _provider is not None and _runtime_fingerprint == fp:
         return _provider
     if s.llm_provider == "openai":

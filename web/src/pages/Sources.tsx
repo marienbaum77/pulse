@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileUp, Pencil, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
+import { FileUp, Pencil, Plus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuth, useProject, useToast } from "../lib/context";
 import { ago, fmtNum } from "../lib/format";
@@ -8,8 +8,8 @@ import type { Source } from "../lib/types";
 import { NoProject } from "../components/NoProject";
 import { Badge, Dialog, Empty, ErrorNote, Field, PageHeader, Spinner, Toggle } from "../components/ui";
 
-interface Form { id?: number; name: string; url: string; authority: number; poll_minutes: number; enabled: boolean }
-const BLANK: Form = { name: "", url: "", authority: 0.5, poll_minutes: 30, enabled: true };
+interface Form { id?: number; name: string; url: string; query: string; search: boolean; authority: number; poll_minutes: number; enabled: boolean }
+const BLANK: Form = { name: "", url: "", query: "", search: false, authority: 0.5, poll_minutes: 30, enabled: true };
 const POLL = [[15, "каждые 15 минут"], [30, "каждые 30 минут"], [60, "раз в час"], [180, "раз в 3 часа"], [360, "раз в 6 часов"], [1440, "раз в сутки"]] as const;
 
 export default function Sources() {
@@ -19,17 +19,24 @@ export default function Sources() {
   const qc = useQueryClient();
   const [form, setForm] = useState<Form | null>(null);
   const [preview, setPreview] = useState<{ count: number; sample: string[] } | string | null>(null);
+  const [searchPreview, setSearchPreview] = useState<{ count: number; new_count: number; sample: { title: string; publisher: string | null }[] } | string | null>(null);
   const opmlRef = useRef<HTMLInputElement>(null);
   const [opmlBusy, setOpmlBusy] = useState(false);
-  const q = useQuery({ queryKey: ["sources", project?.id], queryFn: () => api<Source[]>("/sources", { params: { project_id: project!.id } }), enabled: !!project });
+  const q = useQuery({ queryKey: ["sources", project?.id], queryFn: () => api<Source[]>("/sources", { params: { project_id: project!.id } }), enabled: !!project, refetchInterval: 5000 });
   const refresh = () => qc.invalidateQueries({ queryKey: ["sources"] });
 
   const save = useMutation({
     mutationFn: (f: Form) => {
+      if (!f.id && f.search) {
+        return api("/sources/search", {
+          method: "POST",
+          body: { project_id: project!.id, query: f.query, authority: f.authority, poll_minutes: f.poll_minutes, enabled: f.enabled },
+        });
+      }
       const body = { project_id: project!.id, type: "rss", name: f.name, url: f.url, authority: f.authority, poll_minutes: f.poll_minutes, enabled: f.enabled };
       return f.id ? api(`/sources/${f.id}`, { method: "PUT", body }) : api("/sources", { method: "POST", body });
     },
-    onSuccess: () => { toast("Источник сохранён, первый сбор запущен"); setForm(null); setPreview(null); refresh(); },
+    onSuccess: () => { toast(form?.search ? "Поиск статей добавлен, первый поиск запущен" : "Источник сохранён, первый сбор запущен"); setForm(null); setPreview(null); setSearchPreview(null); refresh(); },
     onError: (e: Error) => toast(e.message, "bad"),
   });
   const remove = useMutation({
@@ -38,14 +45,24 @@ export default function Sources() {
     onError: (e: Error) => toast(e.message, "bad"),
   });
   const fetchNow = useMutation({
-    mutationFn: (id: number) => api(`/sources/${id}/fetch`, { method: "POST" }),
-    onSuccess: () => toast("Сбор поставлен в очередь", "info"),
+    mutationFn: (id: number) => api<{ queued: boolean }>(`/sources/${id}/fetch`, { method: "POST" }),
+    onSuccess: ({ queued }) => {
+      toast(queued ? "Сбор поставлен в очередь" : "Сбор уже выполняется", "info");
+      refresh();
+    },
     onError: (e: Error) => toast(e.message, "bad"),
   });
   const check = useMutation({
     mutationFn: (url: string) => api<{ count: number; sample: string[] }>("/sources/preview", { method: "POST", body: { url } }),
     onSuccess: setPreview,
     onError: (e: Error) => setPreview(e.message),
+  });
+  const checkSearch = useMutation({
+    mutationFn: (query: string) => api<{ count: number; new_count: number; sample: { title: string; publisher: string | null }[] }>("/sources/search/preview", {
+      method: "POST", body: { project_id: project!.id, query },
+    }),
+    onSuccess: setSearchPreview,
+    onError: (e: Error) => setSearchPreview(e.message),
   });
 
   async function onOpml(file: File) {
@@ -87,6 +104,7 @@ export default function Sources() {
           <div className="flex flex-wrap gap-2">
             <input ref={opmlRef} type="file" accept=".opml,.xml,application/xml,text/xml" hidden onChange={(e) => e.target.files?.[0] && onOpml(e.target.files[0])} />
             <button className="btn" disabled={opmlBusy} onClick={() => opmlRef.current?.click()}><FileUp size={16} />{opmlBusy ? "Импорт…" : "Импортировать OPML"}</button>
+            <button className="btn" onClick={() => { setForm({ ...BLANK, search: true }); setPreview(null); setSearchPreview(null); }}><Search size={16} />Искать статьи</button>
             <button className="btn btn-primary" onClick={() => { setForm(BLANK); setPreview(null); }}><Plus size={16} />Добавить RSS-ленту</button>
           </div>
         )}
@@ -103,12 +121,14 @@ export default function Sources() {
                 <div className="flex flex-wrap items-baseline gap-x-3">
                   <span className="font-serif text-[17px] font-medium">{s.name}</span>
                   {s.type === "manual" && <span className="eyebrow">импорт</span>}
+                  {s.url.includes("news.google.com/rss/search?") && <span className="eyebrow">автопоиск статей</span>}
                   {!s.enabled && s.type === "rss" && <span className="eyebrow">отключён</span>}
                 </div>
                 {s.url && <p className="text-[13px] text-muted truncate">{s.url}</p>}
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] mt-1">
                   {s.type === "rss" && <Badge tone={tone}>{s.last_error ? "Ошибка" : s.last_ok_at ? `Обновлён ${ago(s.last_ok_at)}` : "Ещё не опрашивался"}</Badge>}
                   <span className="text-muted num">{fmtNum(s.item_count)} материалов</span>
+                  {s.type === "rss" && s.last_ok_at && <span className="text-muted num">последняя выдача: {s.last_entry_count}, новых: {s.last_new_count}</span>}
                   <span className="text-muted num">авторитетность {s.authority.toFixed(2)}</span>
                   {s.type === "rss" && <span className="text-muted">{POLL.find((p) => p[0] === s.poll_minutes)?.[1] ?? `каждые ${s.poll_minutes} мин`}</span>}
                 </div>
@@ -117,7 +137,7 @@ export default function Sources() {
               {can("editor") && (
                 <div className="flex gap-1.5">
                   {s.type === "rss" && <button className="btn btn-sm" onClick={() => fetchNow.mutate(s.id)} title="Опросить сейчас"><RefreshCw size={14} />Опросить</button>}
-                  {s.type === "rss" && <button className="btn btn-sm btn-ghost" aria-label="Изменить" onClick={() => { setForm({ id: s.id, name: s.name, url: s.url, authority: s.authority, poll_minutes: s.poll_minutes, enabled: s.enabled }); setPreview(null); }}><Pencil size={15} /></button>}
+                  {s.type === "rss" && <button className="btn btn-sm btn-ghost" aria-label="Изменить" onClick={() => { setForm({ id: s.id, name: s.name, url: s.url, query: "", search: false, authority: s.authority, poll_minutes: s.poll_minutes, enabled: s.enabled }); setPreview(null); }}><Pencil size={15} /></button>}
                   <button className="btn btn-sm btn-ghost btn-danger" aria-label="Удалить" onClick={() => confirm(`Удалить источник «${s.name}»? Собранные материалы останутся.`) && remove.mutate(s.id)}><Trash2 size={15} /></button>
                 </div>
               )}
@@ -129,24 +149,44 @@ export default function Sources() {
       {can("editor") && <ImportBox projectId={project.id} />}
 
       <Dialog
-        open={!!form} onClose={() => setForm(null)} title={form?.id ? "Изменить источник" : "Новый RSS-источник"}
-        footer={<><button className="btn" onClick={() => setForm(null)}>Отмена</button><button className="btn btn-primary" disabled={!form?.name || !form?.url || save.isPending} onClick={() => form && save.mutate(form)}>{save.isPending ? "Сохраняем…" : "Сохранить"}</button></>}
+      open={!!form} onClose={() => { setForm(null); setSearchPreview(null); }} title={form?.id ? "Изменить источник" : form?.search ? "Автопоиск статей" : "Новый RSS-источник"}
+      footer={<><button className="btn" onClick={() => setForm(null)}>Отмена</button><button className="btn btn-primary" disabled={form?.search ? !form.query.trim() || save.isPending : !form?.name || !form?.url || save.isPending} onClick={() => form && save.mutate(form)}>{save.isPending ? "Сохраняем…" : form?.search ? "Включить поиск" : "Сохранить"}</button></>}
       >
         {form && (
           <>
-            <Field label="Название"><input className="field" value={form.name} onChange={(e) => patch({ name: e.target.value })} placeholder="Например, Хабр: новости" autoFocus /></Field>
-            <Field label="Адрес ленты">
-              <div className="flex gap-2">
-                <input className="field" value={form.url} onChange={(e) => { patch({ url: e.target.value }); setPreview(null); }} placeholder="https://example.com/rss" inputMode="url" />
-                <button className="btn shrink-0" disabled={!form.url || check.isPending} onClick={() => check.mutate(form.url)}>{check.isPending ? "Читаем…" : "Проверить"}</button>
-              </div>
-              {typeof preview === "string" && <span className="block mt-1.5 text-[13px] text-bad">{preview}</span>}
-              {preview && typeof preview !== "string" && (
-                <span className="block mt-2 text-[13px]"><b>Лента читается:</b> {preview.count} записей. Например:
-                  <span className="block text-muted mt-1">{preview.sample.map((t, i) => <span key={i} className="block truncate">— {t}</span>)}</span>
-                </span>
-              )}
-            </Field>
+          {form.search ? (
+            <>
+              <Field label="Что искать?" hint="Запрос будет регулярно опрашиваться как RSS-лента Google News. Уточняйте тему и используйте операторы, например site:arxiv.org или site:habr.com.">
+                <div className="flex gap-2">
+                  <input className="field" value={form.query} maxLength={300} onChange={(e) => { patch({ query: e.target.value }); setSearchPreview(null); }} placeholder='Например: "Python разработка" -змея' autoFocus />
+                  <button className="btn shrink-0" disabled={form.query.trim().length < 2 || checkSearch.isPending} onClick={() => checkSearch.mutate(form.query.trim())}>{checkSearch.isPending ? "Ищем…" : "Предпросмотр"}</button>
+                </div>
+                {typeof searchPreview === "string" && <span className="block mt-1.5 text-[13px] text-bad">{searchPreview}</span>}
+                {searchPreview && typeof searchPreview !== "string" && (
+                  <span className="block mt-2 text-[13px]"><b>Найдено: {searchPreview.count}, новых в окне проекта: {searchPreview.new_count}.</b>
+                    <span className="block text-muted mt-1">{searchPreview.sample.map((item, i) => <span key={i} className="block truncate">— {item.title}{item.publisher ? ` · ${item.publisher}` : ""}</span>)}</span>
+                  </span>
+                )}
+              </Field>
+              <p className="text-[13px] text-muted -mt-3">Широкий запрос вроде «python» смешивает язык программирования, книги и другие темы. Предпросмотрите выдачу и уточните запрос: например, "Python разработка" -змея. Совпадения с уже известными статьями дедуплицируются, поэтому новых материалов может быть меньше общего числа.</p>
+            </>
+          ) : (
+            <>
+              <Field label="Название"><input className="field" value={form.name} onChange={(e) => patch({ name: e.target.value })} placeholder="Например, Хабр: новости" autoFocus /></Field>
+              <Field label="Адрес ленты">
+                <div className="flex gap-2">
+                  <input className="field" value={form.url} onChange={(e) => { patch({ url: e.target.value }); setPreview(null); }} placeholder="https://example.com/rss" inputMode="url" />
+                  <button className="btn shrink-0" disabled={!form.url || check.isPending} onClick={() => check.mutate(form.url)}>{check.isPending ? "Читаем…" : "Проверить"}</button>
+                </div>
+                {typeof preview === "string" && <span className="block mt-1.5 text-[13px] text-bad">{preview}</span>}
+                {preview && typeof preview !== "string" && (
+                  <span className="block mt-2 text-[13px]"><b>Лента читается:</b> {preview.count} записей. Например:
+                    <span className="block text-muted mt-1">{preview.sample.map((t, i) => <span key={i} className="block truncate">— {t}</span>)}</span>
+                  </span>
+                )}
+              </Field>
+            </>
+          )}
             <div className="grid sm:grid-cols-2 gap-4">
               <Field label={`Авторитетность: ${form.authority.toFixed(2)}`} hint="0 — сомнительный, 1 — первоисточник">
                 <input type="range" min={0} max={1} step={0.05} className="w-full accent-[var(--brand)]" value={form.authority} onChange={(e) => patch({ authority: Number(e.target.value) })} />

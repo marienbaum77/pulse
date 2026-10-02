@@ -21,7 +21,7 @@ async def main() -> None:
             (
                 "Мой канал",
                 "",
-                "extractive",
+                "llm",
                 0.72,
                 Jsonb(DEFAULT_WEIGHTS),
             ),

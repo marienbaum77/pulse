@@ -1,4 +1,4 @@
-import httpx
+﻿import httpx
 import pytest
 
 from app import db, jobs
@@ -131,6 +131,85 @@ async def test_ssrf_guard_blocks_private_hosts(monkeypatch):
     monkeypatch.setattr(get_settings(), "allow_private_urls", False)
     r = await ed.post("/api/sources", json={"project_id": pid, "name": "x", "url": "http://127.0.0.1:8000/feed"})
     assert r.status_code == 400 and "внутренней сети" in r.text
+
+
+async def test_article_search_creates_localized_google_news_rss_source(monkeypatch):
+    from app.api import sources
+
+    await _user("ed@t.io", "editor")
+    ed = await _client("ed@t.io")
+    project = await ed.post("/api/projects", json={"name": "Research", "topic": "Робототехника", "language": "ru"})
+    pid = project.json()["id"]
+
+    async def allow_public_url(_url):
+        return None
+
+    monkeypatch.setattr(sources, "check_url", allow_public_url)
+    response = await ed.post(
+        "/api/sources/search",
+        json={"project_id": pid, "query": '"робототехника" site:arxiv.org', "poll_minutes": 60},
+    )
+    assert response.status_code == 201, response.text
+    source = await db.fetchone("SELECT name, type, url, poll_minutes FROM sources WHERE id = %s", (response.json()["id"],))
+    assert source["type"] == "rss" and source["poll_minutes"] == 60
+    assert source["name"].startswith("Поиск статей:")
+    assert "q=%22%D1%80%D0%BE%D0%B1%D0%BE%D1%82%D0%BE%D1%82%D0%B5%D1%85%D0%BD%D0%B8%D0%BA%D0%B0%22" in source["url"]
+    assert "ceid=RU%3Aru" in source["url"]
+    queued = await db.fetchone("SELECT kind, status FROM jobs WHERE dedupe_key = %s", (f"ingest:{response.json()['id']}",))
+    assert queued == {"kind": "ingest_source", "status": "queued"}
+
+
+async def test_article_search_preview_returns_titles_publishers_and_new_count(monkeypatch):
+    from app.api import sources
+    from app.pipeline.ingest import insert_items
+    from app.textutil import utcnow
+
+    await _user("ed@t.io", "editor")
+    ed = await _client("ed@t.io")
+    project = await ed.post("/api/projects", json={"name": "Research"})
+    pid = project.json()["id"]
+
+    async def allow_public_url(_url):
+        return None
+
+    async def sample_feed(_url):
+        return [
+            {"title": "Python разработка", "url": "https://news.google.com/rss/articles/1", "text": "", "published_at": utcnow(), "publisher_name": "Example"},
+            {"title": "Питоны в природе", "url": "https://news.google.com/rss/articles/2", "text": "", "published_at": utcnow(), "publisher_name": "Nature"},
+        ], {}
+
+    await insert_items(pid, None, [
+        {"title": "Python разработка", "url": "https://news.google.com/rss/articles/1", "text": "", "published_at": utcnow()}
+    ])
+    monkeypatch.setattr(sources, "check_url", allow_public_url)
+    monkeypatch.setattr(sources, "fetch_feed", sample_feed)
+    response = await ed.post("/api/sources/search/preview", json={"project_id": pid, "query": "python"})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["count"] == 2 and data["new_count"] == 1
+    assert data["sample"][0]["publisher"] == "Example"
+
+
+async def test_manual_schedule_run_respects_automatic_publish_mode():
+    await _user("ed@t.io", "editor")
+    ed = await _client("ed@t.io")
+    pid = await make_project(publish_mode="auto")
+    await ed.post("/api/items/import", json={"project_id": pid, "items": load_demo()})
+    await _drain()
+
+    schedule = await ed.post(
+        "/api/schedules",
+        json={"project_id": pid, "name": "Экономика", "cron": "0 9 * * *", "kind": "post", "top_n": 1},
+    )
+    assert schedule.status_code == 201, schedule.text
+    run = await ed.post(f"/api/schedules/{schedule.json()['id']}/run")
+    assert run.status_code == 200, run.text
+    await _drain()
+
+    draft = await db.fetchone("SELECT status, checks FROM drafts WHERE project_id = %s", (pid,))
+    assert draft["status"] == "approved", draft["checks"]
+    assert draft["checks"]["automatic_review"]["passed"] is True
+    assert (await db.fetchone("SELECT count(*) AS n FROM publications"))["n"] == 1
 
 
 async def test_show_sources_setting_and_dashboard_rss_hint():

@@ -7,7 +7,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from .. import db, jobs, publisher
-from ..images import download_image
+from ..images import ImageUnavailable, get_image
 from ..pipeline import drafts_service
 from ..pipeline.generate import automatic_review, check_text
 from ..pipeline.ingest import import_manual
@@ -45,7 +45,8 @@ async def list_items(project_id: int, cluster_id: int | None = None, status: str
         where.append("i.status = %s")
         params.append(status)
     return await db.fetchall(
-        "SELECT i.id, i.title, i.url, i.published_at, i.status, i.cluster_id, s.name AS source_name FROM items i "
+        "SELECT i.id, i.title, i.url, i.published_at, i.status, i.cluster_id, "
+        "COALESCE(NULLIF(i.publisher_name, ''), s.name) AS source_name FROM items i "
         f"LEFT JOIN sources s ON s.id = i.source_id WHERE {' AND '.join(where)} ORDER BY i.published_at DESC LIMIT %s OFFSET %s",
         [*params, limit, offset],
     )
@@ -92,7 +93,7 @@ async def get_cluster(cid: int, user=Depends(viewer)):
     if not c:
         raise HTTPException(404, "Сюжет не найден")
     c["items"] = await db.fetchall(
-        "SELECT i.id, i.title, i.url, i.published_at, s.name AS source_name, (i.image_url IS NOT NULL) AS has_image FROM items i LEFT JOIN sources s ON s.id = i.source_id "
+        "SELECT i.id, i.title, i.url, i.published_at, COALESCE(NULLIF(i.publisher_name, ''), s.name) AS source_name, (i.image_url IS NOT NULL) AS has_image FROM items i LEFT JOIN sources s ON s.id = i.source_id "
         "WHERE i.cluster_id = %s AND i.status = 'clustered' ORDER BY i.published_at",
         (cid,),
     )
@@ -158,7 +159,7 @@ async def list_drafts(project_id: int, status: str | None = None, limit: int = Q
         "SELECT d.id, d.kind, COALESCE(NULLIF(d.title, ''), "
         "(SELECT string_agg(c.title, ' · ' ORDER BY c.score DESC NULLS LAST, c.id) FROM clusters c WHERE c.id = ANY(d.cluster_ids)), "
         "CASE WHEN d.kind = 'digest' THEN 'Сборка дайджеста' ELSE 'Подготовка поста' END) AS title, "
-        "d.status, d.model, d.checks, d.error, d.created_at, d.cluster_ids, (d.image_url IS NOT NULL) AS has_image FROM drafts d "
+        "d.status, d.model, d.checks, d.error, d.created_at, d.updated_at, d.cluster_ids, (d.image_url IS NOT NULL) AS has_image FROM drafts d "
         f"WHERE {' AND '.join(where)} ORDER BY (d.status = 'pending_review') DESC, d.id DESC LIMIT %s",
         [*params, limit],
     )
@@ -180,10 +181,9 @@ async def _image_response(url: str | None) -> Response:
     if not url:
         raise HTTPException(404, "Картинки нет")
     try:
-        data, ctype = await download_image(url)
-    except Exception:
+        data, ctype = await get_image(url)
+    except ImageUnavailable:
         raise HTTPException(404, "Картинка недоступна")
-    # файлы нигде не хранятся: повторные показы обслуживает кеш браузера
     return Response(data, media_type=ctype, headers={"Cache-Control": "private, max-age=604800", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox"})
 
 
@@ -223,10 +223,8 @@ async def edit_draft(did: int, body: DraftPatch, user=Depends(editor)):
     checks = {**check_text(new_body, d["citations"]), "mode": d["params"].get("mode", "extractive"), "edited": True}
     project = await db.fetchone("SELECT publish_mode, max_length FROM projects WHERE id = %s", (d["project_id"],))
     if project["publish_mode"] in ("auto", "full_auto"):
-        rating = await db.fetchone("SELECT interest, interest_reason FROM clusters WHERE id = ANY(%s) AND interest IS NOT NULL LIMIT 1", (d["cluster_ids"],)) if d["kind"] == "post" else None
         checks["automatic_review"] = automatic_review(
             new_title, new_body, d["citations"], checks, project["max_length"], d["kind"],
-            interest=float(rating["interest"]) if rating else None, interest_reason=(rating or {}).get("interest_reason") or "",
         )
     new_image = d["image_url"]
     if body.remove_image:
@@ -256,12 +254,17 @@ async def approve_draft(did: int, user=Depends(editor)):
         if cur["status"] != "approved":  # повторное нажатие «Утвердить» безопасно и не создаёт второй публикации
             raise HTTPException(409, f"Черновик в статусе «{cur['status']}», утвердить нельзя")
     await audit(user, "approve", "draft", did)
-    return {"ok": True, "already": not changed}
+    suppressed = await db.fetchone(
+        "SELECT count(*) AS n FROM publications WHERE draft_id = %s AND status = 'cancelled' "
+        "AND error LIKE 'Точный повтор текста уже поставлен%%'",
+        (did,),
+    )
+    return {"ok": True, "already": not changed, "suppressed": suppressed["n"]}
 
 
 @router.post("/drafts/{did}/reject")
 async def reject_draft(did: int, user=Depends(editor)):
-    if not await drafts_service.reject(did):
+    if not     await drafts_service.reject(did, reopen_clusters=True):
         raise HTTPException(409, "Черновик нельзя отклонить в текущем статусе")
     await audit(user, "reject", "draft", did)
     return {"ok": True}
@@ -274,7 +277,7 @@ async def regenerate_draft(did: int, user=Depends(editor)):
         raise HTTPException(404, "Черновик не найден")
     if d["status"] not in ("pending_review", "failed", "rejected"):
         raise HTTPException(409, "Этот черновик уже утверждён")
-    await drafts_service.reject(did)
+    await drafts_service.reject(did, reopen_clusters=True)
     job = await jobs.enqueue("generate", {"project_id": d["project_id"], "kind": d["kind"], "cluster_ids": d["cluster_ids"], "user_id": user["id"]})
     return {"job_id": job}
 

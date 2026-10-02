@@ -70,8 +70,8 @@ export default function Drafts() {
             </div>
           )}
         </div>
-        {/* после решения по черновику переходим к соседнему из очереди — так редактор разбирает очередь без лишних кликов */}
-        <DraftEditor key={cur} id={cur} project={project} onDecided={() => go(pos >= 0 ? (pendingIds[pos + 1] ?? pendingIds[pos - 1]) : undefined)} />
+        {/* После решения открываем следующий черновик на проверке; если очередь пуста, остаёмся на решённом и показываем статус отправки. */}
+        <DraftEditor key={cur} id={cur} project={project} onDecided={() => go(pos >= 0 ? (pendingIds[pos + 1] ?? pendingIds[pos - 1] ?? cur) : cur)} />
       </div>
     );
   }
@@ -114,9 +114,9 @@ export default function Drafts() {
             return (
               <li key={d.id} className="rule-b">
                 <Link to={`/drafts/${d.id}`} className="flex items-start gap-3.5 py-3.5 hover:bg-sunken/60 -mx-2 px-2" style={{ borderRadius: 3 }}>
-                  {d.has_image && <Thumb src={`/drafts/${d.id}/image`} className="w-[88px] h-[58px] shrink-0 hidden sm:block" />}
+                  {d.has_image && <Thumb src={`/drafts/${d.id}/image?v=${encodeURIComponent(d.updated_at)}`} className="w-[88px] h-[58px] shrink-0 hidden sm:block" />}
                   <span className="min-w-0 flex-1">
-                  <span className="block font-serif text-[17px] font-medium leading-snug">{d.title || (d.status === "failed" ? "Не удалось написать" : "Подготовка поста")}</span>
+                  <span className="block break-words font-serif text-[17px] font-medium leading-snug">{d.title || (d.status === "failed" ? "Не удалось написать" : "Подготовка поста")}</span>
                   <span className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] text-muted mt-0.5">
                     <span>{d.kind === "digest" ? "Дайджест" : "Пост"}</span>
                     <span>{ago(d.created_at)}</span>
@@ -168,14 +168,14 @@ function DraftEditor({ id, project, onDecided }: { id: number; project: Project;
   const approve = useMutation({
     mutationFn: async () => {
       if (dirty) await api(`/drafts/${id}`, { method: "PATCH", body: { title, body } });
-      return api<{ already: boolean }>(`/drafts/${id}/approve`, { method: "POST" });
+      return api<{ already: boolean; suppressed: number }>(`/drafts/${id}/approve`, { method: "POST" });
     },
-    onSuccess: () => { toast("Утверждено. Публикация поставлена в очередь"); refresh(); qc.invalidateQueries({ queryKey: ["publications"] }); onDecided(); },
+    onSuccess: ({ suppressed }) => { toast(suppressed ? `Утверждено; точных дублей не отправлено: ${suppressed}` : "Утверждено. Публикация поставлена в очередь"); refresh(); qc.invalidateQueries({ queryKey: ["publications"] }); onDecided(); },
     onError: fail,
   });
   const reject = useMutation({
     mutationFn: () => api(`/drafts/${id}/reject`, { method: "POST" }),
-    onSuccess: () => { toast("Черновик отклонён, сюжет вернулся в работу"); refresh(); onDecided(); },
+    onSuccess: () => { toast("Черновик отклонён, сюжет исключён из автоматического отбора"); refresh(); onDecided(); },
     onError: fail,
   });
   const regen = useMutation({
@@ -205,12 +205,7 @@ function DraftEditor({ id, project, onDecided }: { id: number; project: Project;
 
       <div className="grid xl:grid-cols-[minmax(0,1fr)_320px] gap-x-12 gap-y-10">
         <div className="min-w-0">
-          <input
-            className="w-full bg-transparent font-serif text-[26px] font-semibold leading-tight py-1 -mx-1 px-1 mb-3"
-            style={{ border: "1px solid transparent", borderRadius: 3 }}
-            value={title} onChange={(e) => setTitle(e.target.value)} readOnly={!editable} placeholder="Заголовок" aria-label="Заголовок"
-            onFocus={(e) => (e.currentTarget.style.borderColor = "var(--rule)")} onBlur={(e) => (e.currentTarget.style.borderColor = "transparent")}
-          />
+          <TitleField value={title} onChange={setTitle} readOnly={!editable} />
           {d.image_url && (
             <figure className="mb-3">
               <Thumb key={`${d.id}-${d.updated_at}`} src={`/drafts/${d.id}/image?v=${encodeURIComponent(d.updated_at)}`} className="w-full max-h-80" />
@@ -333,6 +328,27 @@ function Checks({ checks, maxLength, kind }: { checks: DraftChecks; maxLength: n
       {lines.map((l, i) => <li key={i} className="flex gap-2 text-[13.5px] leading-snug"><span className="mt-0.5 shrink-0">{icon[l.tone]}</span><span>{l.text}</span></li>)}
       <li className="hint pt-1">Проверки эвристические: они ловят типичные ошибки, но не заменяют чтение источников.</li>
     </ul>
+  );
+}
+
+/** Заголовок переносится на несколько строк и растёт по высоте, а не обрезается по ширине колонки. Перевод строки в нём запрещён. */
+function TitleField({ value, onChange, readOnly }: { value: string; onChange: (v: string) => void; readOnly: boolean }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+  return (
+    <textarea
+      ref={ref} rows={1}
+      className="block w-full resize-none overflow-hidden break-words bg-transparent font-serif text-[26px] font-semibold leading-tight py-1 -mx-1 px-1 mb-3"
+      style={{ border: "1px solid transparent", borderRadius: 3, overflowWrap: "anywhere" }}
+      value={value} onChange={(e) => onChange(e.target.value.replace(/\s*\n\s*/g, " "))} onKeyDown={(e) => e.key === "Enter" && e.preventDefault()}
+      readOnly={readOnly} placeholder="Заголовок" aria-label="Заголовок"
+      onFocus={(e) => (e.currentTarget.style.borderColor = "var(--rule)")} onBlur={(e) => (e.currentTarget.style.borderColor = "transparent")}
+    />
   );
 }
 

@@ -28,10 +28,21 @@ class Block:
     article_content_status: str = "pending"
     content_length: int = 0
     image_url: str | None = None
-
     @property
     def text(self) -> str:
         return " ".join(self.sentences)
+
+    @property
+    def output_title(self) -> str:
+        return self.title
+
+    @property
+    def output_sentences(self) -> list[str]:
+        return self.sentences
+
+    @property
+    def output_text(self) -> str:
+        return " ".join(self.output_sentences)
 
 
 async def build_blocks(project: dict, cluster_id: int, start_n: int, provider) -> list[Block]:
@@ -39,7 +50,7 @@ async def build_blocks(project: dict, cluster_id: int, start_n: int, provider) -
     rows = await db.fetchall(
         "SELECT i.id, i.source_id, i.title, i.url, i.text, i.published_at, i.embedding, "
         "i.article_content_status, char_length(btrim(i.text)) AS content_length, i.image_url, "
-        "COALESCE(s.name, 'Источник') AS source_name, COALESCE(s.authority, 0.5) AS authority "
+        "COALESCE(NULLIF(i.publisher_name, ''), s.name, 'Источник') AS source_name, COALESCE(s.authority, 0.5) AS authority "
         "FROM items i LEFT JOIN sources s ON s.id = i.source_id WHERE i.cluster_id = %s AND i.status = 'clustered'",
         (cluster_id,),
     )

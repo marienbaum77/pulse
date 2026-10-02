@@ -9,7 +9,7 @@ import { Field, PageHeader, Spinner, Toggle } from "../components/ui";
 
 const BLANK: ProjectInput = {
   name: "", topic: "", language: "ru", tone: "нейтральный, информативный", max_length: 900, prompt_template: "",
-  generation_mode: "extractive", publish_mode: "review", window_hours: 48, sim_threshold: 0.72, topic_threshold: 0.4,
+  generation_mode: "llm", publish_mode: "review", window_hours: 48, sim_threshold: 0.72, topic_threshold: 0.4,
   weights: { coverage: 0.15, authority: 0.075, freshness: 0.1, velocity: 0.075, topic_fit: 0.6 },
   context_items: 6, context_sentences: 3, min_items: 2, auto_retry_unknown: false, show_sources: true, active: true,
 };

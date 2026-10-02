@@ -2,8 +2,10 @@
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from time import mktime
+from urllib.parse import urlencode
 
 import feedparser
 import httpx
@@ -28,6 +30,32 @@ ARTICLE_FETCH_CONCURRENCY = 4
 # Материалы сюжетов в этих состояниях можно дообогащать; так же условие читает и генерация, чтобы они не расходились.
 ENRICHABLE_CLUSTER_STATES = "('open','drafted','published','closed')"
 _READ_MORE = re.compile(r"\b(?:читать\s+(?:далее|дальше|полностью)|read\s+more|continue\s+reading)\b.*$", re.I)
+_NEWS_LOCALES = {
+    "de": ("DE", "de"),
+    "en": ("US", "en"),
+    "es": ("ES", "es"),
+    "fr": ("FR", "fr"),
+    "it": ("IT", "it"),
+    "ja": ("JP", "ja"),
+    "pt": ("BR", "pt-419"),
+    "ru": ("RU", "ru"),
+    "uk": ("UA", "uk"),
+}
+
+
+@dataclass(frozen=True)
+class InsertStats:
+    inserted: int
+    updated: int
+    updated_cluster_ids: tuple[int, ...]
+
+
+def google_news_search_url(query: str, language: str) -> str:
+    """Google News RSS search endpoint, localized to the project's output language."""
+    code = (language or "ru").casefold().split("-", 1)[0]
+    country, hl = _NEWS_LOCALES.get(code, ("US", code if len(code) == 2 else "en"))
+    params = urlencode({"q": query.strip(), "hl": hl, "gl": country, "ceid": f"{country}:{hl}"})
+    return f"https://news.google.com/rss/search?{params}"
 
 
 def _strip_read_more_teaser(text: str) -> str:
@@ -69,6 +97,7 @@ def parse_feed(content: bytes) -> list[dict]:
         out.append({
             "title": title, "url": e.get("link", ""), "text": _strip_read_more_teaser(strip_html(body))[:MAX_TEXT],
             "published_at": _entry_time(e), "image_url": feed_entry_image(e, body),
+            "publisher_name": strip_html(e.get("source", {}).get("title", "")) or None,
         })
     return out
 
@@ -81,7 +110,7 @@ async def fetch_feed(url: str, etag: str | None = None, last_modified: str | Non
         headers["If-Modified-Since"] = last_modified
     r = await _get(url, headers)
     if r.status_code == 304:
-        return [], {"etag": etag, "last_modified": last_modified}
+        return [], {"etag": etag, "last_modified": last_modified, "not_modified": True}
     r.raise_for_status()
     return parse_feed(r.content), {"etag": r.headers.get("etag"), "last_modified": r.headers.get("last-modified")}
 
@@ -246,25 +275,50 @@ async def _run_article_enrichment(source_id: int, project_id: int, include_clust
         await jobs.enqueue("process_project", {"project_id": project_id}, dedupe_key=f"process:{project_id}")
 
 
-async def insert_items(project_id: int, source_id: int | None, items: list[dict], window_hours: int | None = None) -> int:
-    """Вставляет материалы; дубликаты по URL/хэшу игнорируются. Слишком старые (вне окна) пропускаются."""
+async def insert_items(project_id: int, source_id: int | None, items: list[dict], window_hours: int | None = None) -> InsertStats:
+    """Вставляет материалы; дубликаты обогащают метаданные, не считаясь новыми."""
     floor = utcnow() - timedelta(hours=window_hours) if window_hours else None
     inserted = 0
+    updated = 0
+    updated_cluster_ids: set[int] = set()
     async with db.pool.connection() as conn:
         for it in items:
             if floor and it["published_at"] < floor:
                 continue
             h = item_hash(it.get("url", ""), it["title"], it.get("text", ""))
             cur = await conn.execute(
-                "INSERT INTO items(project_id, source_id, url, url_hash, title, text, published_at, image_url) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
-                # уже известному материалу дописываем картинку, если раньше её не нашли; новым считается только реальная вставка
-                "ON CONFLICT (project_id, url_hash) DO UPDATE SET image_url = EXCLUDED.image_url "
-                "WHERE items.image_url IS NULL AND EXCLUDED.image_url IS NOT NULL RETURNING (xmax = 0) AS created",
-                (project_id, source_id, it.get("url", ""), h, it["title"][:500], it.get("text", "")[:MAX_TEXT], it["published_at"], normalize_image_url(it.get("image_url"))),
+                "INSERT INTO items(project_id, source_id, url, url_hash, title, text, published_at, image_url, publisher_name) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (project_id, url_hash) DO UPDATE SET "
+                "source_id = COALESCE(items.source_id, EXCLUDED.source_id), "
+                "image_url = COALESCE(items.image_url, EXCLUDED.image_url), "
+                "publisher_name = COALESCE(items.publisher_name, EXCLUDED.publisher_name) "
+                "WHERE (items.source_id IS NULL AND EXCLUDED.source_id IS NOT NULL) "
+                "OR (items.image_url IS NULL AND EXCLUDED.image_url IS NOT NULL) "
+                "OR (items.publisher_name IS NULL AND EXCLUDED.publisher_name IS NOT NULL) "
+                "RETURNING (xmax = 0) AS created, cluster_id",
+                (project_id, source_id, it.get("url", ""), h, it["title"][:500], it.get("text", "")[:MAX_TEXT],
+                 it["published_at"], normalize_image_url(it.get("image_url")), it.get("publisher_name")),
             )
             row = await cur.fetchone()
-            inserted += 1 if row and row["created"] else 0
-    return inserted
+            if row and row["created"]:
+                inserted += 1
+            elif row:
+                updated += 1
+                if row["cluster_id"] is not None:
+                    updated_cluster_ids.add(int(row["cluster_id"]))
+    if updated_cluster_ids:
+        await db.execute(
+            "UPDATE clusters c SET item_count = a.n, source_count = GREATEST(a.sc, 1), first_seen = a.f, last_seen = a.l "
+            "FROM (SELECT i.cluster_id, count(*) AS n, "
+            "count(DISTINCT COALESCE(NULLIF(i.publisher_name, ''), s.name, 'Источник')) AS sc, "
+            "min(i.published_at) AS f, max(i.published_at) AS l FROM items i "
+            "LEFT JOIN sources s ON s.id = i.source_id "
+            "WHERE i.cluster_id = ANY(%s) AND i.status = 'clustered' GROUP BY i.cluster_id) a "
+            "WHERE c.id = a.cluster_id",
+            (list(updated_cluster_ids),),
+        )
+    return InsertStats(inserted, updated, tuple(updated_cluster_ids))
 
 
 @jobs.handler("ingest_source")
@@ -278,14 +332,18 @@ async def ingest_source(payload: dict) -> None:
         await db.execute("UPDATE sources SET last_fetched_at = now(), last_error = %s WHERE id = %s", (str(e)[:500], src["id"]))
         await events.notify("source", source_id=src["id"], ok=False)
         raise
-    inserted = await insert_items(src["project_id"], src["id"], entries, src["window_hours"])
+    stats = await insert_items(src["project_id"], src["id"], entries, src["window_hours"])
+    inserted = stats.inserted
     await db.execute(
-        "UPDATE sources SET last_fetched_at = now(), last_ok_at = now(), last_error = NULL, etag = %s, last_modified = %s WHERE id = %s",
-        (meta.get("etag"), meta.get("last_modified"), src["id"]),
+        "UPDATE sources SET last_fetched_at = now(), last_ok_at = now(), last_error = NULL, etag = %s, last_modified = %s, "
+        "last_entry_count = CASE WHEN %s THEN last_entry_count ELSE %s END, "
+        "last_new_count = CASE WHEN %s THEN last_new_count ELSE %s END WHERE id = %s",
+        (meta.get("etag"), meta.get("last_modified"), meta.get("not_modified", False), len(entries),
+         meta.get("not_modified", False), inserted, src["id"]),
     )
-    log.info("source %s: %d entries, %d new", src["id"], len(entries), inserted)
-    await events.notify("source", source_id=src["id"], ok=True, new_items=inserted)
-    if inserted:
+    log.info("source %s: %d entries, %d new, %d existing items updated", src["id"], len(entries), inserted, stats.updated)
+    await events.notify("source", source_id=src["id"], ok=True, new_items=inserted, updated_items=stats.updated)
+    if inserted or stats.updated:
         await jobs.enqueue("process_project", {"project_id": src["project_id"]}, dedupe_key=f"process:{src['project_id']}")
 
 
@@ -300,6 +358,7 @@ async def import_manual(project_id: int, items: list[dict]) -> int:
         ts = it.get("published_at") or (now - timedelta(hours=it.get("hours_ago") or 0))
         per_source.setdefault(name, []).append({"title": it["title"], "text": it.get("text", ""), "url": it.get("url", ""), "published_at": ts, "image_url": it.get("image_url")})
     inserted = 0
+    updated = False
     for name, batch in per_source.items():
         row = await db.fetchone("SELECT id FROM sources WHERE project_id = %s AND type = 'manual' AND name = %s", (project_id, name))
         if not row:
@@ -307,7 +366,9 @@ async def import_manual(project_id: int, items: list[dict]) -> int:
                 "INSERT INTO sources(project_id, type, name, authority, enabled) VALUES (%s, 'manual', %s, %s, false) RETURNING id",
                 (project_id, name, authority[name]),
             )
-        inserted += await insert_items(project_id, row["id"], batch)
-    if inserted:
+        stats = await insert_items(project_id, row["id"], batch)
+        inserted += stats.inserted
+        updated = updated or bool(stats.updated)
+    if inserted or updated:
         await jobs.enqueue("process_project", {"project_id": project_id}, dedupe_key=f"process:{project_id}")
     return inserted

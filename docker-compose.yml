@@ -1,5 +1,5 @@
 # Pulse: полный self-hosted стек.  Запуск:  cp .env.example .env  →  отредактировать  →  docker compose up -d --build
-# Ollama запускается вместе с остальным стеком; модели скачиваются отдельно.
+# Groq is the default OpenAI-compatible chat API; Ollama remains local for embeddings.
 x-backend: &backend
   build: { context: ., dockerfile: backend/Dockerfile }
   restart: unless-stopped
@@ -11,17 +11,23 @@ x-backend: &backend
     ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
     ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Задайте ADMIN_PASSWORD в .env}
     COOKIE_SECURE: ${COOKIE_SECURE:-false}
-    LLM_PROVIDER: ${LLM_PROVIDER:-stub}
-    LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
-    LLM_API_KEY: ${LLM_API_KEY:-ollama}
-    LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
+    LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+    LLM_CHAT_ENABLED: ${LLM_CHAT_ENABLED:-true}
+    LLM_BASE_URL: ${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+    LLM_API_KEY: ${LLM_API_KEY:-}
+    LLM_MODEL: ${LLM_MODEL:-qwen/qwen3.8-27b}
     LLM_TIMEOUT: ${LLM_TIMEOUT:-180}
     EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
-    EMBED_BASE_URL: ${EMBED_BASE_URL:-}
+    EMBED_BASE_URL: ${EMBED_BASE_URL:-http://ollama:11434/v1}
     EMBED_API_KEY: ${EMBED_API_KEY:-}
+    IMAGE_CACHE_DIR: ${IMAGE_CACHE_DIR:-/var/cache/pulse/images}
+    IMAGE_CACHE_MAX_MB: ${IMAGE_CACHE_MAX_MB:-500}
+    IMAGE_CACHE_MAX_AGE_DAYS: ${IMAGE_CACHE_MAX_AGE_DAYS:-30}
     TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
     ALLOW_PRIVATE_URLS: ${ALLOW_PRIVATE_URLS:-false}
     RETENTION_DAYS: ${RETENTION_DAYS:-30}
+  volumes:
+    - image-cache:/var/cache/pulse/images
 
 services:
   db:
@@ -53,7 +59,9 @@ services:
     command: ["python", "-m", "app.worker"]
     environment:
       <<: *backend-env
-      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      # 3 = отдельный воркер для generate + 2 общих, чтобы сбор RSS (ingest_source) не стоял в очереди
+      # позади долгой кластеризации (process_project). При локальной текстовой модели можно снизить до 1.
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-3}
 
   web:
     build: { context: ., dockerfile: web/Dockerfile }
@@ -66,14 +74,20 @@ services:
     image: ollama/ollama:latest
     restart: unless-stopped
     volumes: [ollama:/root/.ollama]
+    environment:
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-4096}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-1m}
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
     # Для GPU NVIDIA раскомментируйте:
     # deploy:
     #   resources:
     #     reservations:
     #       devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
 
-  # Ночной бэкап Postgres на диск хоста (./backups). Том pgdata переживает пересоздание контейнеров,
-  # но не docker compose down -v и не потерю диска — для этого и нужны дампы.
+  # Бэкап Postgres на диск хоста (./backups): раз в BACKUP_INTERVAL_HOURS, без векторов (они пересчитываются), с ротацией.
+  # Том pgdata переживает пересоздание контейнеров, но не docker compose down -v и не потерю диска — для этого и нужны дампы.
+  # Скрипты копируются с удалением CR: файл мог быть сохранён в Windows с CRLF.
   backup:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
@@ -82,21 +96,21 @@ services:
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}
       BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
-    volumes: [./backups:/backups]
+      BACKUP_KEEP_COUNT: ${BACKUP_KEEP_COUNT:-7}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_STRIP_VECTORS: ${BACKUP_STRIP_VECTORS:-true}
+    volumes:
+      - ./backups:/backups
+      - ./deploy/backup.sh:/src/backup.sh:ro
+      - ./deploy/strip-vectors.awk:/src/strip-vectors.awk:ro
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        set -euo pipefail
-        echo "Pulse backup: первый дамп через ~60 с, далее раз в сутки. Каталог: /backups"
-        sleep 60
-        while true; do
-          ts=$$(date +%F_%H%M)
-          pg_dump -h db -U pulse -d pulse | gzip > "/backups/pulse-$$ts.sql.gz"
-          echo "Создан /backups/pulse-$$ts.sql.gz"
-          find /backups -name 'pulse-*.sql.gz' -mtime +$${BACKUP_KEEP_DAYS} -delete 2>/dev/null || true
-          sleep 86400
-        done
+        tr -d '\r' < /src/backup.sh > /tmp/backup.sh
+        tr -d '\r' < /src/strip-vectors.awk > /usr/local/share/strip-vectors.awk
+        exec bash /tmp/backup.sh
 
 volumes:
   pgdata:
   ollama:
+  image-cache:

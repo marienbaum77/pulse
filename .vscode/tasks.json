@@ -1,0 +1,20 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run backend unit tests",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"-c",
+				"backend/pytest.ini",
+				"backend/tests/test_units.py"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

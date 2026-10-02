@@ -23,7 +23,7 @@ export const CLUSTER_STATE: Record<ClusterState, { label: string; tone: Tone }> 
   excluded: { label: "Исключён", tone: "muted" },
 };
 export const DRAFT_STATUS: Record<DraftStatus, { label: string; tone: Tone }> = {
-  generating: { label: "Пишется", tone: "info" },
+  generating: { label: "Генерируется", tone: "info" },
   pending_review: { label: "На проверке", tone: "warn" },
   approved: { label: "Утверждён", tone: "ok" },
   rejected: { label: "Отклонён", tone: "muted" },

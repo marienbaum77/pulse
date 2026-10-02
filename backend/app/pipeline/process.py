@@ -14,6 +14,7 @@ from .clustering_core import Cluster, OnlineClusterer, unit_vector
 
 log = logging.getLogger("pulse.process")
 DUP_SIM = 0.985  # сходство, выше которого материал считается почти-дубликатом уже принятого
+SEARCH_SIM_THRESHOLD = 0.84
 
 
 class VectorIndex:
@@ -96,8 +97,11 @@ async def embed_new(project: dict, provider) -> int:
 
 AGG_SQL = """
 UPDATE clusters c SET item_count = s.n, source_count = GREATEST(s.sc, 1), first_seen = s.f, last_seen = s.l
-FROM (SELECT cluster_id, count(*) AS n, count(DISTINCT source_id) AS sc, min(published_at) AS f, max(published_at) AS l
-      FROM items WHERE cluster_id = ANY(%s) AND status = 'clustered' GROUP BY cluster_id) s
+FROM (SELECT i.cluster_id, count(*) AS n,
+             count(DISTINCT COALESCE(NULLIF(i.publisher_name, ''), s.name, 'Источник')) AS sc,
+             min(i.published_at) AS f, max(i.published_at) AS l
+      FROM items i LEFT JOIN sources s ON s.id = i.source_id
+      WHERE i.cluster_id = ANY(%s) AND i.status = 'clustered' GROUP BY i.cluster_id) s
 WHERE c.id = s.cluster_id
 """
 TITLE_SQL = """
@@ -111,7 +115,10 @@ async def cluster_new(project: dict) -> dict:
     pid = project["id"]
     window = timedelta(hours=project["window_hours"])
     items = await db.fetchall(
-        "SELECT id, published_at, embedding FROM items WHERE project_id = %s AND status = 'embedded' ORDER BY published_at, id", (pid,)
+        "SELECT i.id, i.published_at, i.embedding, "
+        "EXISTS(SELECT 1 FROM sources s WHERE s.id = i.source_id AND s.url LIKE 'https://news.google.com/rss/search?%%') AS is_search_result "
+        "FROM items i WHERE i.project_id = %s AND i.status = 'embedded' ORDER BY i.published_at, i.id",
+        (pid,),
     )
     if not items:
         return {"clustered": 0, "duplicates": 0, "new_clusters": 0}
@@ -136,7 +143,11 @@ async def cluster_new(project: dict) -> dict:
         if near_id is not None and near_sim >= DUP_SIM:
             dups.append((r["id"], near_id))
             continue
+        threshold = clusterer.threshold
+        if r["is_search_result"]:
+            clusterer.threshold = max(threshold, SEARCH_SIM_THRESHOLD)
         cluster, _ = clusterer.add(v, r["published_at"])
+        clusterer.threshold = threshold
         assigned.append((r["id"], cluster))
         index.add(r["id"], v)
 

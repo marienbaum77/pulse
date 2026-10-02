@@ -33,13 +33,13 @@ export interface DraftChecks {
 }
 export interface DraftListItem {
   id: number; kind: "post" | "digest"; title: string; status: DraftStatus; model: string | null;
-  checks: DraftChecks; error: string | null; created_at: string; cluster_ids: number[]; has_image: boolean;
+  checks: DraftChecks; error: string | null; created_at: string; updated_at: string; cluster_ids: number[]; has_image: boolean;
 }
 export interface GenerationJob {
   id: number; status: "queued"; created_at: string; kind: "post" | "digest"; title: string;
 }
 export interface Draft extends DraftListItem {
-  project_id: number; image_url: string | null; body: string; citations: Citation[]; params: Record<string, unknown>; updated_at: string;
+  project_id: number; image_url: string | null; body: string; citations: Citation[]; params: Record<string, unknown>;
   publications: { id: number; status: PubStatus; error: string | null; sent_at: string | null; channel_name: string }[];
 }
 
@@ -52,6 +52,7 @@ export interface Publication {
 export interface Source {
   id: number; project_id: number; type: "rss" | "manual"; name: string; url: string; authority: number; poll_minutes: number;
   enabled: boolean; last_fetched_at: string | null; last_ok_at: string | null; last_error: string | null; item_count: number;
+  last_entry_count: number; last_new_count: number;
 }
 export interface Channel {
   id: number; project_id: number; type: "telegram" | "webhook" | "console"; name: string; config: Record<string, string>;
