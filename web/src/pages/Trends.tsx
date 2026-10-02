@@ -158,7 +158,7 @@ function ClusterDrawer({ id, topicThreshold, onClose }: { id: number | null; top
           </div>
           {can("editor") && c.state !== "published" && (
             <div className="flex flex-wrap gap-2">
-              {c.state !== "drafted" && c.state !== "excluded" && <button className="btn btn-primary" onClick={() => act.mutate("generate")} disabled={act.isPending || belowTopicThreshold} title={belowTopicThreshold ? `Близость к теме ${topicFit.value.toFixed(2)} ниже порога ${topicThreshold.toFixed(2)}` : undefined}>Создать пост</button>}
+              {c.state !== "drafted" && c.state !== "excluded" && <button className="btn btn-primary" onClick={() => act.mutate("generate")} disabled={act.isPending || belowTopicThreshold} title={belowTopicThreshold ? `Близость заголовка к теме ${topicFit.value.toFixed(2)} ниже порога ${topicThreshold.toFixed(2)}` : undefined}>Создать пост</button>}
               {c.state === "excluded"
                 ? <button className="btn" onClick={() => act.mutate("reopen")} disabled={act.isPending}>Вернуть в работу</button>
                 : c.state !== "drafted" && <button className="btn" onClick={() => act.mutate("exclude")} disabled={act.isPending}>Исключить</button>}

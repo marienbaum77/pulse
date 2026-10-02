@@ -130,7 +130,7 @@ async def generate_from_cluster(cid: int, user=Depends(editor)):
     topic_fit = (c["score_breakdown"] or {}).get("topic_fit")
     if not topic_passes_threshold(topic_fit, project["topic_threshold"]):
         value = float(topic_fit.get("value", 0.5))
-        raise HTTPException(409, f"Сюжет ниже порога близости к теме ({value:.2f} < {project['topic_threshold']:.2f})")
+        raise HTTPException(409, f"Близость заголовка сюжета к теме ниже порога ({value:.2f} < {project['topic_threshold']:.2f})")
     job = await jobs.enqueue("generate", {"project_id": c["project_id"], "kind": "post", "cluster_ids": [cid], "user_id": user["id"]})
     return {"job_id": job}
 

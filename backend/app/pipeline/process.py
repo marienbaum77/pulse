@@ -85,14 +85,34 @@ async def ensure_embedding_space(project: dict, provider) -> bool:
 async def embed_new(project: dict, provider) -> int:
     total = 0
     while True:
-        rows = await db.fetchall("SELECT id, title, text FROM items WHERE project_id = %s AND status = 'new' ORDER BY id LIMIT 128", (project["id"],))
+        rows = await db.fetchall(
+            "SELECT id, title, text, status FROM items WHERE project_id = %s "
+            "AND (status = 'new' OR (embedding IS NOT NULL AND title_embedding IS NULL)) "
+            "ORDER BY (status = 'new') DESC, id LIMIT 128",
+            (project["id"],),
+        )
         if not rows:
             return total
-        vecs = await provider.embed([f"{r['title']}. {r['text'][:1200]}" for r in rows], project_id=project["id"])
+        inputs: list[str] = []
+        plan: list[tuple[dict, int, int | None]] = []
+        for row in rows:
+            title_index = len(inputs)
+            inputs.append(row["title"])
+            body_index = None
+            if row["status"] == "new":
+                body_index = len(inputs)
+                inputs.append(f"{row['title']}. {row['text'][:1200]}")
+            plan.append((row, title_index, body_index))
+        vecs = await provider.embed(inputs, project_id=project["id"])
         async with db.pool.connection() as conn:
-            for r, v in zip(rows, vecs):
-                await conn.execute("UPDATE items SET embedding = %s, status = 'embedded' WHERE id = %s", (v, r["id"]))
-        total += len(rows)
+            for row, title_index, body_index in plan:
+                body_embedding = vecs[body_index] if body_index is not None else None
+                await conn.execute(
+                    "UPDATE items SET title_embedding = %s, embedding = COALESCE(%s, embedding), "
+                    "status = CASE WHEN status = 'new' THEN 'embedded' ELSE status END WHERE id = %s",
+                    (vecs[title_index], body_embedding, row["id"]),
+                )
+        total += sum(row["status"] == "new" for row, _, _ in plan)
 
 
 AGG_SQL = """
@@ -176,7 +196,10 @@ async def cluster_new(project: dict) -> dict:
 
 
 SCORE_SQL = """
-SELECT c.id, c.centroid, c.source_count, c.last_seen,
+SELECT c.id, c.centroid,
+  (SELECT avg(i.title_embedding) FROM items i
+   WHERE i.cluster_id = c.id AND i.status = 'clustered' AND i.title_embedding IS NOT NULL) AS title_centroid,
+  c.source_count, c.last_seen,
   COALESCE((SELECT avg(a) FROM (SELECT DISTINCT s.id, s.authority AS a FROM items i JOIN sources s ON s.id = i.source_id
             WHERE i.cluster_id = c.id AND i.status = 'clustered') t), 0.5) AS authority,
   (SELECT count(*) FROM items i WHERE i.cluster_id = c.id AND i.status = 'clustered'
@@ -193,7 +216,7 @@ async def refresh_clusters(project: dict) -> int:
     await db.execute("UPDATE clusters SET state = 'closed' WHERE project_id = %s AND state = 'open' AND last_seen < now() - make_interval(hours => %s)", (pid, hours))
     rows = sorted(await db.fetchall(SCORE_SQL, (pid, hours)), key=lambda r: r["id"])
     now = utcnow()
-    # Без настоящей модели эмбеддингов «близость к теме» была бы случайным числом — считаем её нейтральной.
+    # Без настоящей модели эмбеддингов «близость к теме» не измеряется и остаётся нейтральной.
     provider = await refresh_provider()
     await ensure_topic_embedding(project, provider)
     topic_vec = None if provider.name == "stub" else project["topic_embedding"]
@@ -201,7 +224,7 @@ async def refresh_clusters(project: dict) -> int:
     async with db.pool.connection() as conn:
         for r in rows:
             feats = scoring.compute_features(
-                centroid=r["centroid"],
+                centroid=r["title_centroid"] if r["title_centroid"] is not None else r["centroid"],
                 source_count=r["source_count"],
                 authority=float(r["authority"]),
                 age_hours=(now - r["last_seen"]).total_seconds() / 3600,
@@ -209,7 +232,10 @@ async def refresh_clusters(project: dict) -> int:
                 window_hours=hours,
                 topic_vec=topic_vec,
             )
-            score, parts = scoring.nws(feats, project["weights"], neutral)
+            if r["title_centroid"] is None and topic_vec is not None:
+                feats["topic_fit"] = 0.5
+            row_neutral = neutral if r["title_centroid"] is not None else neutral | frozenset({"topic_fit"})
+            score, parts = scoring.nws(feats, project["weights"], row_neutral)
             await conn.execute("UPDATE clusters SET score = %s, score_breakdown = %s WHERE id = %s", (score, Jsonb(parts), r["id"]))
     return len(rows)
 

@@ -128,6 +128,49 @@ async def test_select_clusters_filters_low_topic_fit_and_zero_disables_filter():
     assert rows[0]["id"] in {cluster["id"] for cluster in selected}
 
 
+async def test_topic_fit_uses_title_embeddings_not_article_body(monkeypatch):
+    pid = await _pipeline()
+    await db.execute("UPDATE items SET title_embedding = NULL WHERE project_id = %s", (pid,))
+
+    class RealProvider:
+        name = "openai"
+
+        async def embed(self, texts, project_id=None):
+            return np.tile(np.eye(1, 256, 0, dtype=np.float32), (len(texts), 1))
+
+    provider = RealProvider()
+    project = await get_project(pid)
+    assert await process.embed_new(project, provider) == 0
+    assert await db.fetchone(
+        "SELECT count(*) AS n FROM items WHERE project_id = %s AND embedding IS NOT NULL AND title_embedding IS NULL",
+        (pid,),
+    ) == {"n": 0}
+
+    cluster = await db.fetchone(
+        "SELECT id, centroid FROM clusters WHERE project_id = %s AND state = 'open' AND item_count >= 2 ORDER BY id LIMIT 1",
+        (pid,),
+    )
+    topic_vec = np.asarray(cluster["centroid"], dtype=np.float32)
+    topic_vec /= np.linalg.norm(topic_vec)
+    axis = np.zeros_like(topic_vec)
+    axis[int(np.argmin(np.abs(topic_vec)))] = 1
+    title_vec = axis - float(axis @ topic_vec) * topic_vec
+    title_vec /= np.linalg.norm(title_vec)
+    await db.execute("UPDATE projects SET topic_embedding = %s WHERE id = %s", (topic_vec, pid))
+    await db.execute("UPDATE items SET title_embedding = %s WHERE cluster_id = %s", (title_vec, cluster["id"]))
+
+    async def get_provider():
+        return provider
+
+    monkeypatch.setattr(process, "refresh_provider", get_provider)
+    await process.refresh_clusters(await get_project(pid))
+
+    result = await db.fetchone("SELECT score_breakdown FROM clusters WHERE id = %s", (cluster["id"],))
+    topic_fit = result["score_breakdown"]["topic_fit"]
+    assert not topic_fit.get("neutral")
+    assert topic_fit["value"] == pytest.approx(0, abs=0.001)
+
+
 async def test_manual_generation_rejects_cluster_below_topic_threshold():
     pid = await _pipeline()
     row = await db.fetchone("SELECT id, score_breakdown FROM clusters WHERE project_id = %s AND state = 'open' AND item_count >= 2 ORDER BY id LIMIT 1", (pid,))

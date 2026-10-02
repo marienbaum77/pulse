@@ -59,25 +59,26 @@ export function Score({ value, width = 112 }: { value: number | null | undefined
   );
 }
 
-/** Разложение NWS: полоса — значение признака (0–1), справа — вклад в итоговый вес. */
+/** Разложение NWS: полоса — значение признака (0–1); для близости темы число справа — само значение. */
 export function Breakdown({ parts }: { parts: Record<string, ScorePart> }) {
   return (
     <div className="space-y-2.5">
       {Object.entries(parts).map(([key, p]) => {
         const neg = p.contribution < 0;
+        const topicFit = key === "topic_fit";
         return (
-          <div key={key} className="grid grid-cols-[150px_1fr_64px] items-center gap-3 text-[13px]" title={SCORE_HINTS[key]}>
+          <div key={key} className="grid grid-cols-[150px_1fr_84px] items-center gap-3 text-[13px]" title={SCORE_HINTS[key]}>
             <span className={neg ? "text-bad" : ""}>{SCORE_LABELS[key] ?? key}</span>
             <div className="h-2 bg-sunken" style={{ borderRadius: 1 }}>
               {!p.neutral && <div className="h-full" style={{ width: `${Math.min(1, p.value) * 100}%`, background: neg ? "var(--bad)" : "var(--brand)", opacity: neg ? 0.8 : 0.75, borderRadius: 1 }} />}
             </div>
-            <span className={`num text-right ${neg ? "text-bad" : p.neutral ? "text-muted" : ""}`} title={p.neutral ? "Не измерено: без настоящей модели эмбеддингов или без темы проекта значение нейтральное и одинаковое у всех сюжетов" : undefined}>
-              {p.neutral ? "н/д" : `${p.contribution > 0 ? "+" : ""}${(p.contribution * 100).toFixed(1)}`}
+            <span className={`num text-right ${neg ? "text-bad" : p.neutral ? "text-muted" : ""}`} title={p.neutral ? "Не измерено: без настоящей модели эмбеддингов или без темы проекта значение нейтральное и одинаковое у всех сюжетов" : topicFit ? `Косинусное сходство заголовков, не вероятность. Вклад в общий вес: +${(p.contribution * 100).toFixed(1)} пункта` : undefined}>
+              {p.neutral ? "н/д" : topicFit ? p.value.toFixed(3) : `${p.contribution > 0 ? "+" : ""}${(p.contribution * 100).toFixed(1)}`}
             </span>
           </div>
         );
       })}
-      <p className="hint pt-1">Полоса — значение признака, число справа — вклад в итог (в пунктах). Вес признака задаётся в настройках проекта.</p>
+      <p className="hint pt-1">Для близости к теме справа указано косинусное сходство заголовков (0–1), не вероятность; наведите, чтобы увидеть вклад в общий вес. У остальных признаков справа указан вклад в пунктах.</p>
     </div>
   );
 }

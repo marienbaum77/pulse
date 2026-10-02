@@ -1,14 +1,14 @@
 import type { ClusterState, DraftStatus, PubStatus } from "./types";
 
 export const SCORE_LABELS: Record<string, string> = {
-  topic_fit: "Близость к теме",
+  topic_fit: "Близость заголовка к теме",
   coverage: "Охват источниками",
   authority: "Авторитетность",
   freshness: "Свежесть",
   velocity: "Скорость роста",
 };
 export const SCORE_HINTS: Record<string, string> = {
-  topic_fit: "Главный критерий автоматического отбора по близости к теме проекта",
+  topic_fit: "Семантическое сходство заголовков материалов в сюжете с темой проекта; содержимое статей не влияет на этот показатель",
   coverage: "Сколько разных источников пишет об этом",
   authority: "Средний вес источников, которые упомянули сюжет",
   freshness: "Падает вдвое каждую четверть окна кластеризации",

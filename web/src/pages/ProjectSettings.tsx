@@ -108,7 +108,7 @@ export default function ProjectSettings() {
           <Field label={`Порог сходства: ${f.sim_threshold.toFixed(2)}`} hint="Выше — строже: сюжеты мельче и чище. Ниже — крупнее, но растёт риск склеить разные события. Значение подбирают на размеченных данных: scripts/eval_clustering.py.">
             <input type="range" min={0.3} max={0.95} step={0.01} className="w-full accent-[var(--brand)]" value={f.sim_threshold} onChange={(e) => set("sim_threshold", Number(e.target.value))} disabled={ro} />
           </Field>
-          <Field label={`Минимальная близость к теме: ${f.topic_threshold.toFixed(2)}`} hint="Автоматический выбор постов и дайджестов пропустит только сюжеты не ниже этого значения. Поставьте 0, чтобы отключить фильтр; снижайте порог, если подходящих сюжетов мало.">
+          <Field label={`Минимальная близость заголовка к теме: ${f.topic_threshold.toFixed(2)}`} hint="Сравниваются заголовки сюжетов и тема проекта, а не полный текст статьи. Сверяйте порог с косинусным сходством в карточке сюжета; это не вероятность. Поставьте 0, чтобы отключить фильтр.">
             <input type="range" min={0} max={0.8} step={0.01} className="w-full accent-[var(--brand)]" value={f.topic_threshold} onChange={(e) => set("topic_threshold", Number(e.target.value))} disabled={ro} />
           </Field>
         </Section>
