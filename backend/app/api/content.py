@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from .. import db, jobs, publisher
 from ..images import ImageUnavailable, get_image
 from ..pipeline import drafts_service
-from ..pipeline.generate import automatic_review, check_text
+from ..pipeline.generate import automatic_review, check_text, default_image_urls
 from ..pipeline.ingest import import_manual
 from ..pipeline.process import clear_clusters
 from ..pipeline.scoring import topic_passes_threshold
@@ -233,6 +233,8 @@ async def edit_draft(did: int, body: DraftPatch, user=Depends(editor)):
         new_image = next((c["image_url"] for c in d["citations"] if c["item_id"] == body.image_item_id and c.get("image_url")), None)
         if new_image is None:
             raise HTTPException(422, "У этого источника нет картинки")
+        if new_image in await default_image_urls([new_image]):
+            raise HTTPException(422, "Это служебная картинка сайта, а не иллюстрация статьи")
     row = await db.fetchone(
         "UPDATE drafts SET title = COALESCE(%s, title), body = %s, checks = %s, image_url = %s, updated_at = now() WHERE id = %s RETURNING *",
         (body.title, new_body, Jsonb(checks), new_image, did),

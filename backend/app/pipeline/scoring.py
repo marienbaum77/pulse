@@ -42,14 +42,16 @@ def compute_features(
     recent_items: int,
     window_hours: int,
     topic_vec: np.ndarray | None,
+    topic_fit: float | None = None,
 ) -> dict[str, float]:
-    topic_fit = max(0.0, cosine(centroid, topic_vec)) if topic_vec is not None else 0.5
+    # topic_fit — готовое значение (средний topic_score материалов сюжета); иначе считается по центроиду.
+    fit = max(0.0, min(1.0, float(topic_fit))) if topic_fit is not None else (max(0.0, cosine(centroid, topic_vec)) if topic_vec is not None else 0.5)
     return {
         "coverage": coverage(source_count),
         "authority": min(1.0, max(0.0, authority)),
         "freshness": freshness(age_hours, window_hours / 4),
         "velocity": velocity(recent_items),
-        "topic_fit": topic_fit,
+        "topic_fit": fit,
     }
 
 

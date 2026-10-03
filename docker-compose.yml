@@ -59,8 +59,8 @@ services:
     command: ["python", "-m", "app.worker"]
     environment:
       <<: *backend-env
-      # 3 = отдельный воркер для generate + 2 общих, чтобы сбор RSS (ingest_source) не стоял в очереди
-      # позади долгой кластеризации (process_project). При локальной текстовой модели можно снизить до 1.
+      # 3 = отдельный воркер для сбора RSS (ingest_source/enrich_articles) + отдельный для generate + общий.
+      # Каждый следующий добавляет общий воркер (process_project и т.п.). 2 = сбор + общий, 1 = всё в одном.
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-3}
 
   web:

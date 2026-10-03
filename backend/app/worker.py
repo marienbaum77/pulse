@@ -9,6 +9,25 @@ from .pipeline import generate, ingest, process  # noqa: F401  (регистри
 
 log = logging.getLogger("pulse.worker")
 
+# Сбор лент дешёвый и не должен ждать долгую обработку проектов; генерация — плановая и тоже получает свою полосу.
+INGEST_KINDS = ("ingest_source", "enrich_articles")
+GENERATE_KINDS = ("generate",)
+Lane = tuple[tuple[str, ...] | None, tuple[str, ...] | None]  # (include_kinds, exclude_kinds)
+
+
+def plan_lanes(concurrency: int) -> list[Lane]:
+    """Делит воркеры на полосы: 1 → общая; 2 → сбор + общая; 3+ → сбор + генерация + общие (без generate).
+    Общие полосы тоже берут ingest_source первыми (см. приоритет в jobs.claim)."""
+    n = max(1, concurrency)
+    if n == 1:
+        return [(None, None)]
+    lanes: list[Lane] = [(INGEST_KINDS, None)]
+    if n == 2:
+        return lanes + [(None, None)]
+    lanes.append((GENERATE_KINDS, None))
+    lanes += [(None, GENERATE_KINDS)] * (n - 2)
+    return lanes
+
 
 async def job_loop(stop: asyncio.Event, idx: int, *, include_kinds: tuple[str, ...] | None = None, exclude_kinds: tuple[str, ...] | None = None) -> None:
     while not stop.is_set():
@@ -35,24 +54,18 @@ async def main() -> None:
             loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:
             pass
-    priority_workers = 1 if s.worker_concurrency > 1 else 0
-    general_workers = max(1, s.worker_concurrency - priority_workers)
+    lanes = plan_lanes(s.worker_concurrency)
     log.info(
-        "worker started (provider=%s, concurrency=%d, generate_workers=%d, general_workers=%d)",
+        "worker started (provider=%s, concurrency=%d, lanes=%s)",
         s.llm_provider,
         s.worker_concurrency,
-        priority_workers,
-        general_workers,
+        ", ".join("all" if not inc and not exc else f"only {'/'.join(inc)}" if inc else f"not {'/'.join(exc)}" for inc, exc in lanes),
     )
     tasks = [asyncio.create_task(scheduler.loop(stop)), asyncio.create_task(publisher.loop(stop))]
-    tasks += [asyncio.create_task(job_loop(stop, i, include_kinds=("generate",))) for i in range(priority_workers)]
-    if priority_workers:
-        tasks += [
-            asyncio.create_task(job_loop(stop, priority_workers + i, exclude_kinds=("generate",)))
-            for i in range(general_workers)
-        ]
-    else:
-        tasks += [asyncio.create_task(job_loop(stop, i)) for i in range(general_workers)]
+    tasks += [
+        asyncio.create_task(job_loop(stop, i, include_kinds=inc, exclude_kinds=exc))
+        for i, (inc, exc) in enumerate(lanes)
+    ]
     await stop.wait()
     log.info("shutting down")
     await asyncio.gather(*tasks, return_exceptions=True)

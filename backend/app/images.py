@@ -6,6 +6,7 @@ import hashlib
 import logging
 import os
 import re
+import struct
 import tempfile
 import time
 from pathlib import Path
@@ -21,10 +22,19 @@ log = logging.getLogger("pulse.images")
 MAX_IMAGE_URL = 1000
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+# Минимальный размер обложки: мелкие картинки (логотипы, иконки, старые превью) на посте выглядят размыто.
+MIN_COVER_WIDTH = 300
+MIN_COVER_HEIGHT = 150
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
 _ATTR = re.compile(r"""\b(src|data-src|width|height)\s*=\s*["']?([^"'\s>]+)""", re.I)
-# трекинговые пиксели, иконки, аватары и рекламные баннеры не годятся как иллюстрация поста
-_JUNK = re.compile(r"(pixel|spacer|blank\.|1x1|/favicon|/logo|/icon|/avatar|/emoji|/smil|gravatar|doubleclick|/ads?/|counter|dummy|placeholder|no-?image|default-?(image|thumb|cover)|stub)", re.I)
+# трекинговые пиксели, иконки, аватары и рекламные баннеры не годятся как иллюстрация поста;
+# отдельно ловим логотипы и карточки для соцсетей — это оформление сайта, а не картинка статьи
+_JUNK = re.compile(
+    r"(pixel|spacer|blank\.|1x1|/favicon|/logo|/icon|/avatar|/emoji|/smil|gravatar|doubleclick|/ads?/|counter|dummy|placeholder|no-?image|default-?(image|thumb|cover)|stub"
+    r"|(?:^|[/_.-])logo(?:[/_.-]|$)|(?:^|[/_.-])social(?:[/_.-]|$)|opengraph|twitter[-_.]?card|sprite)",
+    re.I,
+)
+_JPEG_SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 
 
 def normalize_image_url(url: str | None, base: str = "") -> str | None:
@@ -37,6 +47,64 @@ def normalize_image_url(url: str | None, base: str = "") -> str | None:
     if parts.path.lower().endswith((".svg", ".ico")) or _JUNK.search(url):
         return None
     return url
+
+
+def image_dimensions(data: bytes) -> tuple[int, int] | None:
+    """Размеры картинки из её заголовка, без полного декодирования. Поддержаны PNG, JPEG, GIF, WebP."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        return struct.unpack(">II", data[16:24])
+    if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+        return struct.unpack("<HH", data[6:10])
+    if data[:2] == b"\xff\xd8":
+        return _jpeg_dimensions(data)
+    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+        return _webp_dimensions(data)
+    return None
+
+
+def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+    i, n = 2, len(data)
+    while i + 9 < n:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0x01, 0xD8) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        if marker == 0xD9:
+            break
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        if length < 2:
+            break
+        if marker in _JPEG_SOF:
+            h, w = struct.unpack(">HH", data[i + 5:i + 9])
+            return w, h
+        i += 2 + length
+    return None
+
+
+def _webp_dimensions(data: bytes) -> tuple[int, int] | None:
+    fmt = data[12:16]
+    if fmt == b"VP8X" and len(data) >= 30:
+        return int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1
+    if fmt == b"VP8 " and len(data) >= 30:
+        if data[23:26] != b"\x9d\x01\x2a":
+            return None
+        return int.from_bytes(data[26:28], "little") & 0x3FFF, int.from_bytes(data[28:30], "little") & 0x3FFF
+    if fmt == b"VP8L" and len(data) >= 25 and data[20] == 0x2F:
+        b0, b1, b2, b3 = data[21], data[22], data[23], data[24]
+        return ((b0 | ((b1 & 0x3F) << 8)) & 0x3FFF) + 1, (((b3 & 0x0F) << 10) | (b2 << 2) | (b1 >> 6)) + 1
+    return None
+
+
+def cover_quality(data: bytes) -> bool | None:
+    """Годится ли картинка на обложку: True — да, False — мелкая, None — размер определить не удалось."""
+    size = image_dimensions(data)
+    if size is None:
+        return None
+    return size[0] >= MIN_COVER_WIDTH and size[1] >= MIN_COVER_HEIGHT
+
 
 
 def _from_html(html: str, base: str) -> str | None:

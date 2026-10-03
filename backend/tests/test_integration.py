@@ -128,9 +128,9 @@ async def test_select_clusters_filters_low_topic_fit_and_zero_disables_filter():
     assert rows[0]["id"] in {cluster["id"] for cluster in selected}
 
 
-async def test_topic_fit_uses_title_embeddings_not_article_body(monkeypatch):
+async def test_backfill_computes_title_embeddings_and_topic_scores():
     pid = await _pipeline()
-    await db.execute("UPDATE items SET title_embedding = NULL WHERE project_id = %s", (pid,))
+    await db.execute("UPDATE items SET title_embedding = NULL, topic_score = NULL WHERE project_id = %s", (pid,))
 
     class RealProvider:
         name = "openai"
@@ -139,36 +139,29 @@ async def test_topic_fit_uses_title_embeddings_not_article_body(monkeypatch):
             return np.tile(np.eye(1, 256, 0, dtype=np.float32), (len(texts), 1))
 
     provider = RealProvider()
-    project = await get_project(pid)
-    assert await process.embed_new(project, provider) == 0
+    assert await process.needs_topic_backfill(pid) is True
+    assert await process.backfill_topic_scores(pid, provider) > 0
+    assert await process.needs_topic_backfill(pid) is False
     assert await db.fetchone(
-        "SELECT count(*) AS n FROM items WHERE project_id = %s AND embedding IS NOT NULL AND title_embedding IS NULL",
+        "SELECT count(*) FILTER (WHERE title_embedding IS NULL) AS no_title, "
+        "count(*) FILTER (WHERE topic_score IS NULL) AS no_score "
+        "FROM items WHERE project_id = %s AND status = 'clustered'",
         (pid,),
-    ) == {"n": 0}
+    ) == {"no_title": 0, "no_score": 0}
 
+
+async def test_topic_fit_is_average_of_item_topic_scores():
+    pid = await _pipeline()
     cluster = await db.fetchone(
-        "SELECT id, centroid FROM clusters WHERE project_id = %s AND state = 'open' AND item_count >= 2 ORDER BY id LIMIT 1",
-        (pid,),
+        "SELECT id FROM clusters WHERE project_id = %s AND state = 'open' AND item_count >= 2 ORDER BY id LIMIT 1", (pid,)
     )
-    topic_vec = np.asarray(cluster["centroid"], dtype=np.float32)
-    topic_vec /= np.linalg.norm(topic_vec)
-    axis = np.zeros_like(topic_vec)
-    axis[int(np.argmin(np.abs(topic_vec)))] = 1
-    title_vec = axis - float(axis @ topic_vec) * topic_vec
-    title_vec /= np.linalg.norm(title_vec)
-    await db.execute("UPDATE projects SET topic_embedding = %s WHERE id = %s", (topic_vec, pid))
-    await db.execute("UPDATE items SET title_embedding = %s WHERE cluster_id = %s", (title_vec, cluster["id"]))
+    await db.execute("UPDATE items SET topic_score = 0.42 WHERE cluster_id = %s", (cluster["id"],))
 
-    async def get_provider():
-        return provider
-
-    monkeypatch.setattr(process, "refresh_provider", get_provider)
     await process.refresh_clusters(await get_project(pid))
 
-    result = await db.fetchone("SELECT score_breakdown FROM clusters WHERE id = %s", (cluster["id"],))
-    topic_fit = result["score_breakdown"]["topic_fit"]
-    assert not topic_fit.get("neutral")
-    assert topic_fit["value"] == pytest.approx(0, abs=0.001)
+    fit = (await db.fetchone("SELECT score_breakdown FROM clusters WHERE id = %s", (cluster["id"],)))["score_breakdown"]["topic_fit"]
+    assert fit.get("neutral") is None
+    assert abs(fit["value"] - 0.42) < 1e-6
 
 
 async def test_manual_generation_rejects_cluster_below_topic_threshold():
@@ -544,6 +537,23 @@ async def test_job_queue_can_reserve_generate_lane():
     assert seen == [("generate", 2), ("process", 1)]
 
 
+async def test_long_lease_is_set_on_claim_and_renewed_while_running():
+    await jobs.enqueue("process_project", {"project_id": 1}, dedupe_key="process:lease")
+    job = await jobs.claim()
+
+    assert job is not None
+    row = await db.fetchone("SELECT locked_until > now() + interval '5 minutes' AS long FROM jobs WHERE id = %s", (job["id"],))
+    assert row["long"] is True
+
+    await db.execute("UPDATE jobs SET locked_until = now() + interval '1 second' WHERE id = %s", (job["id"],))
+    assert await jobs.renew_lease(job["id"]) is True
+    row = await db.fetchone("SELECT locked_until > now() + interval '5 minutes' AS long FROM jobs WHERE id = %s", (job["id"],))
+    assert row["long"] is True
+
+    await db.execute("UPDATE jobs SET status = 'done' WHERE id = %s", (job["id"],))
+    assert await jobs.renew_lease(job["id"]) is False  # завершённую задачу аренда не продлевает
+
+
 async def test_schedule_fires_exactly_once_per_slot_and_polls_sources():
     pid = await make_project()
     await db.execute("INSERT INTO schedules(project_id, name, cron, tz, kind, top_n) VALUES (%s, 's', '* * * * *', 'UTC', 'digest', 3)", (pid,))
@@ -832,6 +842,23 @@ async def test_scheduled_generation_jobs_are_deduplicated():
     first = await jobs.enqueue("generate", {"project_id": 1}, dedupe_key="schedule:1")
     second = await jobs.enqueue("generate", {"project_id": 1}, dedupe_key="schedule:1")
     assert first and second is None
+
+
+async def test_default_image_urls_detects_site_wide_pictures():
+    from app.pipeline.generate import default_image_urls, pick_cover_image
+
+    pid = await make_project()
+    src = await db.fetchone("INSERT INTO sources(project_id, type, name, url) VALUES (%s, 'rss', 'S', 'https://s.test/rss') RETURNING id", (pid,))
+    for i in range(4):
+        await db.execute(
+            "INSERT INTO items(project_id, source_id, url, url_hash, title, text, published_at, image_url) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (pid, src["id"], f"https://s.test/{i}", f"h{i}", f"t{i}", "x", utcnow(), "https://cdn.test/logo.png"),
+        )
+    assert await default_image_urls(["https://cdn.test/logo.png"]) == {"https://cdn.test/logo.png"}
+    assert await default_image_urls(["https://cdn.test/photo.jpg"]) == set()
+    # одна и та же картинка на многих материалах — служебная: обложкой не становится
+    assert await pick_cover_image([{"image_url": "https://cdn.test/logo.png"}]) is None
+    await db.execute("DELETE FROM sources WHERE id = %s", (src["id"],))
 
 
 async def test_repeated_feed_fetch_backfills_image_without_counting_as_new_item():

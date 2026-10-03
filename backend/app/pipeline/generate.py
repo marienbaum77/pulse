@@ -8,6 +8,7 @@ from langdetect import DetectorFactory, LangDetectException, detect_langs
 from psycopg.types.json import Jsonb
 
 from .. import db, events, jobs
+from ..images import ImageUnavailable, cover_quality, get_image
 from ..providers import LLMUnavailable, refresh_provider
 from ..textutil import numbers_in, split_sentences, strip_citations, strip_source_footer, truncate, utcnow, words
 from . import drafts_service
@@ -254,9 +255,53 @@ def _citation(b: Block) -> dict:
     }
 
 
-def _pick_image(citations: list[dict]) -> str | None:
-    """Иллюстрация поста — картинка первого из использованных в тексте источников, у которого она есть."""
-    return next((c["image_url"] for c in citations if c.get("image_url")), None)
+# Один и тот же URL на стольких материалах — это оформление сайта (логотип, карточка для соцсетей), а не картинка статьи.
+DEFAULT_IMAGE_MIN_ITEMS = 4
+# Сколько кандидатов проверяем скачиванием: обычно первая же картинка источника годится, дальше ждать незачем.
+MAX_COVER_PROBES = 3
+
+
+async def default_image_urls(urls: list[str]) -> set[str]:
+    """URL картинок, которые встречаются на множестве материалов: так вычисляются дефолтные обложки сайтов."""
+    if not urls:
+        return set()
+    rows = await db.fetchall(
+        "SELECT image_url FROM items WHERE image_url = ANY(%s) GROUP BY image_url HAVING count(*) >= %s",
+        (list(dict.fromkeys(urls)), DEFAULT_IMAGE_MIN_ITEMS),
+    )
+    return {r["image_url"] for r in rows}
+
+
+async def drop_default_images(citations: list[dict]) -> set[str]:
+    """Убирает дефолтные картинки сайтов из источников: они не должны предлагаться как обложка."""
+    defaults = await default_image_urls([c["image_url"] for c in citations if c.get("image_url")])
+    for c in citations:
+        if c.get("image_url") in defaults:
+            c["image_url"] = None
+    return defaults
+
+
+async def _cover_ok(url: str) -> bool | None:
+    """True — годится на обложку, False — слишком мелкая, None — проверить не удалось (сеть или неизвестный формат)."""
+    try:
+        data, _ = await get_image(url)
+    except ImageUnavailable:
+        return None
+    return cover_quality(data)
+
+
+async def pick_cover_image(citations: list[dict]) -> str | None:
+    """Обложка — первая картинка источников, которая не является дефолтной для сайта и достаточно крупная.
+    Если размер проверить не удалось (сайт недоступен), картинка не отбрасывается: считаем её пригодной."""
+    urls = [c["image_url"] for c in citations if c.get("image_url")]
+    if not urls:
+        return None
+    defaults = await default_image_urls(urls)
+    candidates = [url for url in dict.fromkeys(urls) if url not in defaults]
+    for url in candidates[:MAX_COVER_PROBES]:
+        if await _cover_ok(url) is not False:
+            return url
+    return None
 
 
 _MIN_PUBLISHABLE_BODY_CHARS = 80
@@ -430,9 +475,11 @@ async def _create_and_fill(
         not force_review and project["publish_mode"] in ("auto", "full_auto")
     )
     res["checks"]["automatic_review"] = review
+    await drop_default_images(res["citations"])
+    cover = await pick_cover_image(res["citations"])
     await db.execute(
         "UPDATE drafts SET title = %s, body = %s, citations = %s, checks = %s, model = %s, params = %s, image_url = %s, status = 'pending_review', updated_at = now() WHERE id = %s",
-        (res["title"], res["body"], Jsonb(res["citations"]), Jsonb(res["checks"]), res["model"], Jsonb(res["params"]), _pick_image(res["citations"]), draft_id),
+        (res["title"], res["body"], Jsonb(res["citations"]), Jsonb(res["checks"]), res["model"], Jsonb(res["params"]), cover, draft_id),
     )
     await events.notify("draft", draft_id=draft_id, status="pending_review", project_id=project["id"])
     if not force_review and project["publish_mode"] in ("auto", "full_auto"):

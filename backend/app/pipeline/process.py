@@ -1,5 +1,6 @@
 """Обработка проекта: эмбеддинги → инкрементальная кластеризация → скоринг NWS."""
 import logging
+import re
 from datetime import timedelta
 
 import numpy as np
@@ -15,6 +16,49 @@ from .clustering_core import Cluster, OnlineClusterer, unit_vector
 log = logging.getLogger("pulse.process")
 DUP_SIM = 0.985  # сходство, выше которого материал считается почти-дубликатом уже принятого
 SEARCH_SIM_THRESHOLD = 0.84
+
+
+def parse_topic_aspects(topic: str) -> list[str]:
+    """Разбивает строку темы на аспекты по запятым/точкам с запятой/точкам/двоеточиям.
+    Нужно, чтобы «размытая» тема из многих понятий не превращалась в один усреднённый вектор."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[,;.:]", topic or ""):
+        part = part.strip()
+        key = part.casefold()
+        if part and key not in seen:
+            seen.add(key)
+            out.append(part[:120])
+    return out
+
+
+def project_topic_aspects(project: dict) -> list[str]:
+    """Явные аспекты темы из настроек проекта; если не заданы — авто-разбор строки темы."""
+    raw = project.get("topic_aspects") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    aspects = [str(a).strip()[:120] for a in raw if str(a).strip()]
+    return aspects or parse_topic_aspects(project.get("topic", ""))
+
+
+async def load_aspect_vectors(project: dict, provider) -> np.ndarray | None:
+    """Векторы аспектов темы; None, если аспектов нет или провайдер без настоящих эмбеддингов."""
+    if provider.name == "stub":
+        return None
+    aspects = project_topic_aspects(project)
+    if not aspects:
+        return None
+    return await provider.embed(aspects, project_id=project["id"])
+
+
+def max_aspect_similarity(vectors: np.ndarray, aspect_vecs: np.ndarray) -> np.ndarray:
+    """Для каждого вектора — максимальный косинус к аспектам темы (0..1)."""
+    v = np.asarray(vectors, dtype=np.float32)
+    v = v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12)
+    a = np.asarray(aspect_vecs, dtype=np.float32)
+    a = a / np.maximum(np.linalg.norm(a, axis=1, keepdims=True), 1e-12)
+    return np.clip(v @ a.T, 0.0, 1.0).max(axis=1)
+
 
 
 class VectorIndex:
@@ -72,7 +116,7 @@ async def ensure_embedding_space(project: dict, provider) -> bool:
                 await conn.execute(
                     "UPDATE clusters SET centroid = NULL, published_centroid = NULL, score = NULL, score_breakdown = NULL, "
                     "state = CASE WHEN state = 'published' THEN 'published' ELSE 'closed' END WHERE project_id = %s", (pid,))
-                await conn.execute("UPDATE items SET status = 'new', embedding = NULL, cluster_id = NULL, dup_of = NULL WHERE project_id = %s", (pid,))
+                await conn.execute("UPDATE items SET status = 'new', embedding = NULL, title_embedding = NULL, topic_score = NULL, cluster_id = NULL, dup_of = NULL WHERE project_id = %s", (pid,))
                 await conn.execute("UPDATE projects SET topic_embedding = NULL WHERE id = %s", (pid,))
     from psycopg.types.json import Jsonb as _J
     await db.execute(
@@ -83,36 +127,100 @@ async def ensure_embedding_space(project: dict, provider) -> bool:
 
 
 async def embed_new(project: dict, provider) -> int:
+    """Векторы текста и заголовка для новых материалов: без них не работает кластеризация, поэтому обрабатываются все сразу.
+    Заодно считается topic_score — максимальная близость заголовка к аспектам темы."""
     total = 0
+    aspect_vecs = await load_aspect_vectors(project, provider)
     while True:
         rows = await db.fetchall(
-            "SELECT id, title, text, status FROM items WHERE project_id = %s "
-            "AND (status = 'new' OR (embedding IS NOT NULL AND title_embedding IS NULL)) "
-            "ORDER BY (status = 'new') DESC, id LIMIT 128",
+            "SELECT id, title, text FROM items WHERE project_id = %s AND status = 'new' ORDER BY id LIMIT 64",
             (project["id"],),
         )
         if not rows:
             return total
         inputs: list[str] = []
-        plan: list[tuple[dict, int, int | None]] = []
         for row in rows:
-            title_index = len(inputs)
-            inputs.append(row["title"])
-            body_index = None
-            if row["status"] == "new":
-                body_index = len(inputs)
-                inputs.append(f"{row['title']}. {row['text'][:1200]}")
-            plan.append((row, title_index, body_index))
+            inputs += [row["title"], f"{row['title']}. {row['text'][:1200]}"]
         vecs = await provider.embed(inputs, project_id=project["id"])
+        scores = max_aspect_similarity(vecs[0::2], aspect_vecs) if aspect_vecs is not None else None
         async with db.pool.connection() as conn:
-            for row, title_index, body_index in plan:
-                body_embedding = vecs[body_index] if body_index is not None else None
+            for i, row in enumerate(rows):
                 await conn.execute(
-                    "UPDATE items SET title_embedding = %s, embedding = COALESCE(%s, embedding), "
-                    "status = CASE WHEN status = 'new' THEN 'embedded' ELSE status END WHERE id = %s",
-                    (vecs[title_index], body_embedding, row["id"]),
+                    "UPDATE items SET title_embedding = %s, embedding = %s, status = 'embedded', topic_score = %s "
+                    "WHERE id = %s AND status = 'new'",
+                    (vecs[2 * i], vecs[2 * i + 1], None if scores is None else float(scores[i]), row["id"]),
                 )
-        total += sum(row["status"] == "new" for row, _, _ in plan)
+        total += len(rows)
+
+
+# Догонка для материалов, встроенных до появления topic_score: свежие первыми — они сильнее влияют на рейтинг.
+# Вектор заголовка уже есть у большинства материалов, поэтому topic_score пересчитывается без обращений к модели.
+TOPIC_BACKFILL_BATCH = 128
+_BACKFILL_BASE = (
+    "i.project_id = %s AND i.status = 'clustered' AND i.embedding IS NOT NULL "
+    "AND EXISTS (SELECT 1 FROM clusters c WHERE c.id = i.cluster_id AND c.state IN ('open','published'))"
+)
+TITLE_BACKFILL_WHERE = f"{_BACKFILL_BASE} AND i.title_embedding IS NULL"
+TOPIC_BACKFILL_WHERE = f"{_BACKFILL_BASE} AND (i.title_embedding IS NULL OR i.topic_score IS NULL)"
+
+
+async def needs_topic_backfill(project_id: int, with_scores: bool = True) -> bool:
+    where = TOPIC_BACKFILL_WHERE if with_scores else TITLE_BACKFILL_WHERE
+    return await db.fetchone(f"SELECT 1 FROM items i WHERE {where} LIMIT 1", (project_id,)) is not None
+
+
+async def backfill_topic_scores(project_id: int, provider, limit: int = TOPIC_BACKFILL_BATCH) -> int:
+    """Одна порция догонки: досчитывает векторы заголовков и topic_score старым материалам."""
+    project = await get_project(project_id)
+    if not project:
+        return 0
+    aspect_vecs = await load_aspect_vectors(project, provider)
+    where = TOPIC_BACKFILL_WHERE if aspect_vecs is not None else TITLE_BACKFILL_WHERE
+    rows = await db.fetchall(
+        f"SELECT i.id, i.title, i.title_embedding FROM items i WHERE {where} ORDER BY i.published_at DESC, i.id LIMIT %s",
+        (project_id, limit),
+    )
+    if not rows:
+        return 0
+    missing = [row["title"] for row in rows if row["title_embedding"] is None]
+    fresh = iter(await provider.embed(missing, project_id=project_id) if missing else [])
+    title_vecs = np.asarray(
+        [next(fresh) if row["title_embedding"] is None else row["title_embedding"] for row in rows], dtype=np.float32
+    )
+    scores = max_aspect_similarity(title_vecs, aspect_vecs) if aspect_vecs is not None else None
+    async with db.pool.connection() as conn:
+        for i, row in enumerate(rows):
+            await conn.execute(
+                "UPDATE items SET title_embedding = COALESCE(title_embedding, %s), topic_score = %s WHERE id = %s",
+                (title_vecs[i], None if scores is None else float(scores[i]), row["id"]),
+            )
+    return len(rows)
+
+
+async def schedule_topic_backfill(project_id: int) -> None:
+    await jobs.enqueue("backfill_topic_scores", {"project_id": project_id}, dedupe_key=f"topic-backfill:{project_id}")
+
+
+@jobs.handler("backfill_topic_scores")
+async def backfill_topic_scores_job(payload: dict) -> None:
+    project_id = int(payload["project_id"])
+    project = await get_project(project_id)
+    if not project or not project["active"]:
+        return
+    provider = await refresh_provider()
+    if provider.name == "stub":
+        return  # без настоящих эмбеддингов тема не измеряется — догонять нечего
+    with_scores = bool(project_topic_aspects(project))
+    # Отдельный ключ, а не блокировка проекта: бэкфилл не мешает process_project, но две порции не дублируют работу.
+    async with db.advisory_lock(3, project_id) as got:
+        if not got:
+            return  # уже работает другая порция; она сама поставит продолжение
+        done = await backfill_topic_scores(project_id, provider)
+    if done and await needs_topic_backfill(project_id, with_scores):
+        await schedule_topic_backfill(project_id)
+    elif done:
+        log.info("project %s: topic scores backfill finished", project_id)
+        await jobs.enqueue("process_project", {"project_id": project_id}, dedupe_key=f"process:{project_id}")
 
 
 AGG_SQL = """
@@ -199,6 +307,8 @@ SCORE_SQL = """
 SELECT c.id, c.centroid,
   (SELECT avg(i.title_embedding) FROM items i
    WHERE i.cluster_id = c.id AND i.status = 'clustered' AND i.title_embedding IS NOT NULL) AS title_centroid,
+  (SELECT avg(i.topic_score) FROM items i
+   WHERE i.cluster_id = c.id AND i.status = 'clustered' AND i.topic_score IS NOT NULL) AS topic_score,
   c.source_count, c.last_seen,
   COALESCE((SELECT avg(a) FROM (SELECT DISTINCT s.id, s.authority AS a FROM items i JOIN sources s ON s.id = i.source_id
             WHERE i.cluster_id = c.id AND i.status = 'clustered') t), 0.5) AS authority,
@@ -223,6 +333,9 @@ async def refresh_clusters(project: dict) -> int:
     neutral = frozenset({"topic_fit"}) if topic_vec is None else frozenset()
     async with db.pool.connection() as conn:
         for r in rows:
+            # Приоритет — средний topic_score материалов сюжета (устойчив к размытому центроиду больших сюжетов).
+            # Если оценок ещё нет (старые материалы, идёт догонка), остаётся прежний расчёт по центроиду заголовков.
+            item_fit = r["topic_score"] is not None
             feats = scoring.compute_features(
                 centroid=r["title_centroid"] if r["title_centroid"] is not None else r["centroid"],
                 source_count=r["source_count"],
@@ -231,10 +344,14 @@ async def refresh_clusters(project: dict) -> int:
                 recent_items=r["recent"],
                 window_hours=hours,
                 topic_vec=topic_vec,
+                topic_fit=float(r["topic_score"]) if item_fit else None,
             )
-            if r["title_centroid"] is None and topic_vec is not None:
-                feats["topic_fit"] = 0.5
-            row_neutral = neutral if r["title_centroid"] is not None else neutral | frozenset({"topic_fit"})
+            if item_fit:
+                row_neutral = frozenset()  # оценка по материалам измерена — нейтральной подстановки нет
+            else:
+                if r["title_centroid"] is None and topic_vec is not None:
+                    feats["topic_fit"] = 0.5
+                row_neutral = neutral if r["title_centroid"] is not None else neutral | frozenset({"topic_fit"})
             score, parts = scoring.nws(feats, project["weights"], row_neutral)
             await conn.execute("UPDATE clusters SET score = %s, score_breakdown = %s WHERE id = %s", (score, Jsonb(parts), r["id"]))
     return len(rows)
@@ -294,7 +411,8 @@ async def process_project(project_id: int) -> dict:
         stats["scored"] = await refresh_clusters(project)
     log.info("project %s processed: %s", project_id, stats)
     await events.notify("pipeline", project_id=project_id, stage="processed", **stats)
-    
+    if provider.name != "stub" and await needs_topic_backfill(project_id, bool(project_topic_aspects(project))):
+        await schedule_topic_backfill(project_id)
     return stats
 
 

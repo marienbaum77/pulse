@@ -8,7 +8,7 @@ import type { Project, ProjectInput } from "../lib/types";
 import { Field, PageHeader, Spinner, Toggle } from "../components/ui";
 
 const BLANK: ProjectInput = {
-  name: "", topic: "", language: "ru", tone: "нейтральный, информативный", max_length: 900, prompt_template: "",
+  name: "", topic: "", topic_aspects: [], language: "ru", tone: "нейтральный, информативный", max_length: 900, prompt_template: "",
   generation_mode: "llm", publish_mode: "review", window_hours: 48, sim_threshold: 0.72, topic_threshold: 0.4,
   weights: { coverage: 0.15, authority: 0.075, freshness: 0.1, velocity: 0.075, topic_fit: 0.6 },
   context_items: 6, context_sentences: 3, min_items: 2, auto_retry_unknown: false, show_sources: true, active: true,
@@ -64,6 +64,16 @@ export default function ProjectSettings() {
           <Field label="Тема" hint="Одно-два предложения. Сюжеты, близкие по смыслу к теме, получают больший вес.">
             <textarea className="field" rows={3} value={f.topic} onChange={(e) => set("topic", e.target.value)} disabled={ro} placeholder="Например: базы данных, облачная инфраструктура, ИИ и ИТ-инциденты" />
           </Field>
+          <Field label="Аспекты темы" hint={<>Каждый аспект — отдельная фраза с новой строки. Материал считается тематичным, если его заголовок близок хотя бы к одному аспекту; близость сюжета — среднее по его материалам. Пусто — аспекты разбираются из строки «Тема» по запятым. Оставляйте 5–10 конкретных аспектов и избегайте слов-ловушек («инциденты», «новости»).</>}>
+            <textarea
+              className="field font-mono text-[13px]"
+              rows={6}
+              value={f.topic_aspects.join("\n")}
+              onChange={(e) => set("topic_aspects", e.target.value.split("\n"))}
+              disabled={ro}
+              placeholder={"базы данных и СУБД\nоблачные сервисы и инфраструктура\nискусственный интеллект и машинное обучение\nразработка и программирование\nкибербезопасность\nгаджеты и потребительская электроника"}
+            />
+          </Field>
         </Section>
 
         <Section title="Генерация текста">
@@ -108,7 +118,7 @@ export default function ProjectSettings() {
           <Field label={`Порог сходства: ${f.sim_threshold.toFixed(2)}`} hint="Выше — строже: сюжеты мельче и чище. Ниже — крупнее, но растёт риск склеить разные события. Значение подбирают на размеченных данных: scripts/eval_clustering.py.">
             <input type="range" min={0.3} max={0.95} step={0.01} className="w-full accent-[var(--brand)]" value={f.sim_threshold} onChange={(e) => set("sim_threshold", Number(e.target.value))} disabled={ro} />
           </Field>
-          <Field label={`Минимальная близость заголовка к теме: ${f.topic_threshold.toFixed(2)}`} hint="Сравниваются заголовки сюжетов и тема проекта, а не полный текст статьи. Сверяйте порог с косинусным сходством в карточке сюжета; это не вероятность. Поставьте 0, чтобы отключить фильтр.">
+          <Field label={`Минимальная близость к теме: ${f.topic_threshold.toFixed(2)}`} hint="Близость сюжета — среднее по его материалам: насколько заголовки близки к аспектам темы. Это косинусное сходство, а не вероятность; сверяйте порог с карточкой сюжета. Поставьте 0, чтобы отключить фильтр.">
             <input type="range" min={0} max={0.8} step={0.01} className="w-full accent-[var(--brand)]" value={f.topic_threshold} onChange={(e) => set("topic_threshold", Number(e.target.value))} disabled={ro} />
           </Field>
         </Section>

@@ -6,7 +6,10 @@ RUN pip install -r requirements.txt
 COPY backend/app ./app
 COPY backend/scripts ./scripts
 COPY sample_data ./sample_data
-RUN useradd --create-home --uid 10001 pulse && chown -R pulse /app
+RUN useradd --create-home --uid 10001 pulse \
+    && chown -R pulse /app \
+    && mkdir -p /var/cache/pulse/images \
+    && chown -R pulse /var/cache/pulse
 USER pulse
 EXPOSE 8000
 # API и воркер — один образ, разные команды (см. docker-compose.yml)

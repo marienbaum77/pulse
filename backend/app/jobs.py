@@ -1,4 +1,6 @@
 """Очередь задач на PostgreSQL (SELECT ... FOR UPDATE SKIP LOCKED). Без внешнего брокера."""
+import asyncio
+import contextlib
 import logging
 from contextvars import ContextVar
 from typing import Awaitable, Callable
@@ -11,6 +13,11 @@ from .textutil import utcnow
 log = logging.getLogger("pulse.jobs")
 Handler = Callable[[dict], Awaitable[None]]
 HANDLERS: dict[str, Handler] = {}
+# Аренда задачи: живой воркер продлевает её каждые LEASE_RENEW_SECONDS, поэтому reclaim_expired
+# подбирает только задачи упавших воркеров, а не просто долгие.
+LEASE_SECONDS = 600
+LEASE_RENEW_SECONDS = 60.0
+
 
 
 _current: ContextVar[dict | None] = ContextVar("current_job", default=None)
@@ -95,13 +102,32 @@ async def claim(include_kinds: tuple[str, ...] | None = None, exclude_kinds: tup
     if kind_where:
         where = f"{where} AND {kind_where}"
     return await db.fetchone(
-        "UPDATE jobs SET status = 'running', attempts = attempts + 1, locked_until = now() + interval '10 minutes' "
+        "UPDATE jobs SET status = 'running', attempts = attempts + 1, locked_until = now() + make_interval(secs => %s) "
         f"WHERE id = (SELECT id FROM jobs WHERE {where} "
         "ORDER BY CASE kind WHEN 'enrich_articles' THEN 0 WHEN 'generate' THEN 1 "
         "WHEN 'ingest_source' THEN 2 WHEN 'process_project' THEN 3 ELSE 4 END, run_at, id "
         "FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *",
-        kind_params,
+        [LEASE_SECONDS, *kind_params],
     )
+
+
+async def renew_lease(job_id: int) -> bool:
+    """Продлевает аренду выполняемой задачи. False — задачу уже забрал reclaim_expired."""
+    return bool(await db.execute(
+        "UPDATE jobs SET locked_until = now() + make_interval(secs => %s) WHERE id = %s AND status = 'running'",
+        (LEASE_SECONDS, job_id),
+    ))
+
+
+async def _keep_lease(job_id: int) -> None:
+    while True:
+        await asyncio.sleep(LEASE_RENEW_SECONDS)
+        try:
+            if not await renew_lease(job_id):
+                log.warning("job %s lost its lease (reclaimed while running)", job_id)
+                return
+        except Exception:  # временный сбой БД: попробуем на следующем круге, запас аренды это позволяет
+            log.exception("failed to renew lease for job %s", job_id)
 
 
 async def complete(job_id: int) -> None:
@@ -156,6 +182,7 @@ async def run_one(include_kinds: tuple[str, ...] | None = None, exclude_kinds: t
         return False
     fn = HANDLERS.get(job["kind"])
     token = _current.set(job)
+    lease = asyncio.create_task(_keep_lease(job["id"]))
     try:
         if fn is None:
             raise RuntimeError(f"нет обработчика для {job['kind']}")
@@ -167,5 +194,8 @@ async def run_one(include_kinds: tuple[str, ...] | None = None, exclude_kinds: t
         log.exception("job %s (%s) failed", job["id"], job["kind"])
         await fail(job, f"{type(e).__name__}: {e}")
     finally:
+        lease.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await lease
         _current.reset(token)
     return True

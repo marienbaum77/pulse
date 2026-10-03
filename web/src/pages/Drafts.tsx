@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, Check, ChevronLeft, ChevronRight, ExternalLink, Info, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ChevronLeft, ChevronRight, ExternalLink, ImageOff, Info, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuth, useProject, useToast } from "../lib/context";
 import { ago, stripCitations } from "../lib/format";
@@ -209,7 +209,12 @@ function DraftEditor({ id, project, onDecided }: { id: number; project: Project;
           {d.image_url && (
             <figure className="mb-3">
               <Thumb key={`${d.id}-${d.updated_at}`} src={`/drafts/${d.id}/image?v=${encodeURIComponent(d.updated_at)}`} className="w-full max-h-80" />
-              {editable && <button className="text-[12.5px] text-muted hover:text-ink mt-1" onClick={() => image.mutate({ remove_image: true })} disabled={busy}>Убрать картинку из поста</button>}
+              {editable && (
+                <figcaption className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
+                  <button className="btn btn-sm" onClick={() => image.mutate({ remove_image: true })} disabled={busy}><ImageOff size={14} />Убрать картинку</button>
+                  <span className="hint">Пост выйдет без иллюстрации — так лучше, если картинка не по теме или низкого качества.</span>
+                </figcaption>
+              )}
             </figure>
           )}
           <AutoTextarea value={body} onChange={setBody} readOnly={!editable} />

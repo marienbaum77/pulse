@@ -5,14 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, field_validator
 
-from .. import db
+from .. import db, jobs
 from ..pipeline.scoring import COMPONENTS, DEFAULT_WEIGHTS
 from ..security import audit, editor, viewer
 
 router = APIRouter(tags=["projects"])
 
 PROJECT_COLS = (
-    "id, name, topic, language, tone, max_length, prompt_template, prompt_version, generation_mode, publish_mode, window_hours, "
+    "id, name, topic, topic_aspects, language, tone, max_length, prompt_template, prompt_version, generation_mode, publish_mode, window_hours, "
     "sim_threshold, topic_threshold, weights, context_items, context_sentences, min_items, auto_retry_unknown, show_sources, active, created_at"
 )
 
@@ -21,6 +21,7 @@ PROJECT_COLS = (
 class ProjectBody(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     topic: str = Field("", max_length=1000)
+    topic_aspects: list[str] = Field(default_factory=list, max_length=50)
     language: str = Field("ru", max_length=10)
     tone: str = Field("нейтральный, информативный", max_length=200)
     max_length: int = Field(900, ge=200, le=3500)
@@ -50,6 +51,19 @@ class ProjectBody(BaseModel):
             raise ValueError("Веса должны быть в диапазоне 0..1")
         return v
 
+    @field_validator("topic_aspects")
+    @classmethod
+    def _aspects(cls, v):
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in v:
+            aspect = str(item).strip()[:120]
+            key = aspect.casefold()
+            if aspect and key not in seen:
+                seen.add(key)
+                out.append(aspect)
+        return out
+
 
 @router.get("/projects")
 async def list_projects(user=Depends(viewer)):
@@ -68,6 +82,7 @@ async def get_project(pid: int, user=Depends(viewer)):
 async def create_project(body: ProjectBody, user=Depends(editor)):
     d = body.model_dump()
     d["weights"] = Jsonb({**DEFAULT_WEIGHTS, **(d["weights"] or {})})
+    d["topic_aspects"] = Jsonb(d["topic_aspects"])
     cols = list(d)
     row = await db.fetchone(
         f"INSERT INTO projects({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) RETURNING {PROJECT_COLS}", [d[c] for c in cols]
@@ -78,16 +93,22 @@ async def create_project(body: ProjectBody, user=Depends(editor)):
 
 @router.put("/projects/{pid}")
 async def update_project(pid: int, body: ProjectBody, user=Depends(editor)):
-    old = await db.fetchone("SELECT topic, prompt_template, prompt_version FROM projects WHERE id = %s", (pid,))
+    old = await db.fetchone("SELECT topic, topic_aspects, prompt_template, prompt_version FROM projects WHERE id = %s", (pid,))
     if not old:
         raise HTTPException(404, "Проект не найден")
     d = body.model_dump()
     d["weights"] = Jsonb({**DEFAULT_WEIGHTS, **(d["weights"] or {})})
+    d["topic_aspects"] = Jsonb(d["topic_aspects"])
     d["prompt_version"] = old["prompt_version"] + (1 if body.prompt_template != old["prompt_template"] else 0)
     sets = [f"{k} = %s" for k in d]
-    if body.topic != old["topic"]:
+    topic_changed = body.topic != old["topic"] or body.topic_aspects != list(old["topic_aspects"] or [])
+    if topic_changed:
         sets.append("topic_embedding = NULL")
     row = await db.fetchone(f"UPDATE projects SET {', '.join(sets)} WHERE id = %s RETURNING {PROJECT_COLS}", [*d.values(), pid])
+    if topic_changed:
+        # Тема изменилась — старые topic_score недействительны, пересчитываем и обновляем рейтинг сюжетов.
+        await db.execute("UPDATE items SET topic_score = NULL WHERE project_id = %s", (pid,))
+        await jobs.enqueue("process_project", {"project_id": pid}, dedupe_key=f"process:{pid}")
     await audit(user, "update", "project", pid)
     return row
 

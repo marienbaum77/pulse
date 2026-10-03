@@ -460,6 +460,35 @@ def test_normalize_image_url_rejects_unsafe_and_junk():
     assert normalize_image_url("https://x.test/icon.svg") is None
     assert normalize_image_url("https://x.test/" + "a" * 1100 + ".jpg") is None
     assert normalize_image_url("/pics/1.jpg", "https://x.test/post") == "https://x.test/pics/1.jpg"
+    # логотипы и карточки для соцсетей — оформление сайта, а не картинка статьи
+    assert normalize_image_url("https://tass.com/img/blocks/common/tass_logo_share_eng.png") is None
+    assert normalize_image_url("https://cdnstatic.rg.ru/images/rg-social-dummy-logo-650x360.jpg") is None
+    assert normalize_image_url("https://cdn.test/opengraph-cover.jpg") is None
+
+
+def test_image_dimensions_reads_headers_of_known_formats():
+    import struct
+
+    from app.images import image_dimensions
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", 800, 600)
+    assert image_dimensions(png) == (800, 600)
+
+    gif = b"GIF89a" + struct.pack("<HH", 320, 240)
+    assert image_dimensions(gif) == (320, 240)
+
+    # JPEG: SOI, сегмент APP0, затем SOF0 с высотой 480 и шириной 640
+    jpeg = (
+        b"\xff\xd8" + b"\xff\xe0" + struct.pack(">H", 16) + b"\x00" * 14
+        + b"\xff\xc0" + struct.pack(">H", 17) + b"\x08" + struct.pack(">HH", 480, 640) + b"\x03" + b"\x00" * 9
+    )
+    assert image_dimensions(jpeg) == (640, 480)
+
+    # WebP (расширенный формат VP8X): холст 1200x630 хранится как размер минус один
+    webp = b"RIFF" + struct.pack("<I", 30) + b"WEBP" + b"VP8X" + struct.pack("<I", 10) + b"\x00" * 4 + (1199).to_bytes(3, "little") + (629).to_bytes(3, "little")
+    assert image_dimensions(webp) == (1200, 630)
+
+    assert image_dimensions(b"not an image") is None
 
 
 async def test_image_is_downloaded_once_and_served_from_disk_cache(tmp_path, monkeypatch):
@@ -482,11 +511,40 @@ async def test_image_is_downloaded_once_and_served_from_disk_cache(tmp_path, mon
     assert calls == 1
 
 
-def test_draft_image_is_taken_from_first_cited_source_with_picture():
-    from app.pipeline.generate import _pick_image
+async def test_pick_cover_image_skips_site_defaults_and_small_images(monkeypatch):
+    from app.pipeline import generate
 
-    assert _pick_image([{"image_url": None}, {"image_url": "https://a.test/1.jpg"}, {"image_url": "https://a.test/2.jpg"}]) == "https://a.test/1.jpg"
-    assert _pick_image([{"n": 1}]) is None
+    async def defaults(urls):
+        return {"https://a.test/default.png"} if "https://a.test/default.png" in urls else set()
+
+    async def quality(url):
+        return {"https://a.test/small.jpg": False}.get(url)  # None — размер неизвестен, картинку не выбрасываем
+
+    monkeypatch.setattr(generate, "default_image_urls", defaults)
+    monkeypatch.setattr(generate, "_cover_ok", quality)
+
+    citations = [
+        {"image_url": "https://a.test/default.png"},  # дефолтная картинка сайта
+        {"image_url": "https://a.test/small.jpg"},    # слишком мелкая
+        {"image_url": "https://a.test/good.jpg"},     # годится
+    ]
+    assert await generate.pick_cover_image(citations) == "https://a.test/good.jpg"
+    assert await generate.pick_cover_image([{"image_url": "https://a.test/default.png"}]) is None
+    assert await generate.pick_cover_image([{"n": 1}]) is None
+    # недоступный для проверки источник не наказываем: обложкой станет его картинка
+    assert await generate.pick_cover_image([{"image_url": "https://a.test/unknown.jpg"}]) == "https://a.test/unknown.jpg"
+
+
+async def test_drop_default_images_clears_citation_pictures(monkeypatch):
+    from app.pipeline import generate
+
+    async def defaults(urls):
+        return {"https://a.test/default.png"}
+
+    monkeypatch.setattr(generate, "default_image_urls", defaults)
+    citations = [{"image_url": "https://a.test/default.png"}, {"image_url": "https://a.test/photo.jpg"}]
+    assert await generate.drop_default_images(citations) == {"https://a.test/default.png"}
+    assert [c["image_url"] for c in citations] == [None, "https://a.test/photo.jpg"]
 
 
 def test_source_dump_detector_flags_sequential_retelling_but_not_synthesis():
@@ -533,3 +591,36 @@ async def test_post_with_retry_retries_transient_gateway_errors(monkeypatch):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://x") as client:
         r = await providers._post_with_retry(client, "/p", {})
     assert r.status_code == 200 and len(calls) == 3
+
+
+def test_worker_lanes_reserve_ingest_and_generate_slots():
+    from app.worker import plan_lanes
+
+    assert plan_lanes(1) == [(None, None)]
+    # при двух воркерах сбор лент получает отдельную полосу и не ждёт обработку проектов
+    assert plan_lanes(2) == [(("ingest_source", "enrich_articles"), None), (None, None)]
+    # при трёх и больше — плюс отдельная полоса генерации, общие не берут generate
+    lanes = plan_lanes(3)
+    assert lanes[0] == (("ingest_source", "enrich_articles"), None)
+    assert lanes[1] == (("generate",), None)
+    assert lanes[2] == (None, ("generate",))
+    assert plan_lanes(5) == [*lanes, (None, ("generate",)), (None, ("generate",))]
+
+
+def test_parse_topic_aspects_splits_and_dedupes():
+    from app.pipeline.process import parse_topic_aspects
+
+    assert parse_topic_aspects("Технологии: базы данных, облака; ИИ. ии") == ["Технологии", "базы данных", "облака", "ИИ"]
+    assert parse_topic_aspects("") == []
+
+
+def test_max_aspect_similarity_takes_closest_aspect():
+    from app.pipeline.process import max_aspect_similarity
+
+    items = np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    aspects = np.asarray([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+    assert max_aspect_similarity(items, aspects).tolist() == [1.0, 1.0]
+
+    # заголовок ближе ко второму аспекту (0.6), а не к первому (0.0)
+    single = max_aspect_similarity(np.asarray([[1.0, 0.0]], dtype=np.float32), np.asarray([[0.0, 1.0], [0.6, 0.8]], dtype=np.float32))
+    assert abs(float(single[0]) - 0.6) < 1e-6

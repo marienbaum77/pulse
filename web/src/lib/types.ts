@@ -2,7 +2,7 @@ export type Role = "admin" | "editor" | "viewer";
 export interface User { id: number; email: string; role: Role; created_at?: string }
 
 export interface Project {
-  id: number; name: string; topic: string; language: string; tone: string; max_length: number;
+  id: number; name: string; topic: string; topic_aspects: string[]; language: string; tone: string; max_length: number;
   prompt_template: string; prompt_version: number; generation_mode: "llm" | "extractive" | "auto"; publish_mode: "review" | "auto" | "full_auto";
   window_hours: number; sim_threshold: number; topic_threshold: number; weights: Record<string, number>;
   context_items: number; context_sentences: number; min_items: number; auto_retry_unknown: boolean; show_sources: boolean; active: boolean;
