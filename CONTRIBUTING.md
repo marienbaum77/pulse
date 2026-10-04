@@ -14,7 +14,7 @@ request — every contribution helps.
 1. Fork and create a branch from `main`
 2. Make your changes
 3. Write or update tests if needed
-4. Run the test suite — see [Development](README.md#development)
+4. Run the test suite — see [docs/development.md](docs/development.md)
 5. Follow the [conventional commits](#conventional-commits) convention
 6. Submit a pull request
 
