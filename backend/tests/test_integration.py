@@ -810,7 +810,7 @@ async def test_embeddings_and_chat_can_use_different_servers(monkeypatch):
     assert hits["chat"] == [("/v1/chat/completions", "Bearer chat-key")]
 
 
-async def test_telegram_sends_photo_for_short_post_and_link_preview_for_long(monkeypatch):
+async def test_telegram_uploads_photo_for_short_and_long_posts(monkeypatch):
     calls = []
 
     def handler(method, path, headers, body):
@@ -826,10 +826,13 @@ async def test_telegram_sends_photo_for_short_post_and_link_preview_for_long(mon
         assert (await publisher.send_telegram(channel, short, {"id": 1})).kind == "sent"
         assert calls[-1][0] == "sendPhoto" and calls[-1][1].startswith("multipart/form-data") and b"PNG-bytes" in calls[-1][2]
 
+        # длинный текст не помещается в подпись к фото: картинка уходит отдельным фото, затем текст —
+        # так в канале изображение крупное, а не мелкое превью ссылки
         long_draft = {**short, "id": 2, "body": "Длинный пост. " * 100}
         assert (await publisher.send_telegram(channel, long_draft, {"id": 1})).kind == "sent"
-        method, _, body = calls[-1]
-        assert method == "sendMessage" and json.loads(body)["link_preview_options"]["show_above_text"] is True
+        assert [c[0] for c in calls[-2:]] == ["sendPhoto", "sendMessage"]
+        assert b"PNG-bytes" in calls[-2][2]
+        assert "link_preview_options" not in json.loads(calls[-1][2])
 
         broken = {**short, "id": 3, "image_url": f"{srv.url}/missing.txt"}
         assert (await publisher.send_telegram(channel, broken, {"id": 1})).kind == "sent"

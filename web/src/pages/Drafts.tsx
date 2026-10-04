@@ -110,7 +110,7 @@ export default function Drafts() {
             </li>
           ))}
           {rows.map((d) => {
-            const warn = (d.checks.unsupported_numbers?.length ?? 0) + (d.checks.invalid_citations?.length ?? 0) > 0;
+            const warn = (d.checks.invalid_citations?.length ?? 0) > 0;
             return (
               <li key={d.id} className="rule-b">
                 <Link to={`/drafts/${d.id}`} className="flex items-start gap-3.5 py-3.5 hover:bg-sunken/60 -mx-2 px-2" style={{ borderRadius: 3 }}>
@@ -318,8 +318,6 @@ function Checks({ checks, maxLength, kind }: { checks: DraftChecks; maxLength: n
   if (checks.mode === "extractive") {
     lines.push({ tone: "info", text: "Текст собран из предложений источников без языковой модели: числа и факты дословно из материалов. Стиль сухой — при необходимости поправьте вручную." });
   } else {
-    const un = checks.unsupported_numbers ?? [];
-    lines.push(un.length ? { tone: "warn", text: `Числа, которых нет в источниках: ${un.join(", ")}. Проверьте вручную.` } : { tone: "ok", text: "Все числа из текста встречаются в источниках." });
     const inv = checks.invalid_citations ?? [];
     if (inv.length) lines.push({ tone: "bad", text: `Ссылки на несуществующие источники: ${inv.map((n) => `[${n}]`).join(" ")}.` });
     if (checks.citation_coverage != null) lines.push({ tone: checks.citation_coverage < 0.5 ? "warn" : "ok", text: `Со ссылкой на источник: ${Math.round(checks.citation_coverage * 100)}% предложений.` });

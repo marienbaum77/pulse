@@ -1,0 +1,66 @@
+# Сборка установщика Pulse (electron-builder). Запуск из каталога desktop: npm run dist
+# Приложение — лишь лаунчер: оно встраивает исходники стека как ресурсы и при первом запуске
+# раскладывает их в записываемую папку, после чего запускает docker compose.
+appId: com.pulse.desktop
+productName: Pulse
+directories:
+  output: release
+  buildResources: build
+
+# Что попадает внутрь самого приложения (asar).
+files:
+  - main.js
+  - preload.js
+  - renderer/**/*
+  - lib/**/*
+  - package.json
+
+# Исходники стека кладём рядом с приложением, в resources/repo.
+# node_modules и служебные каталоги исключаем: образы всё равно собираются в Docker.
+extraResources:
+  - from: ../backend
+    to: repo/backend
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/*.pyc"
+  - from: ../web
+    to: repo/web
+    filter:
+      - "**/*"
+      - "!node_modules/**"
+      - "!dist/**"
+      - "!**/*.tsbuildinfo"
+  - from: ../sample_data
+    to: repo/sample_data
+  - from: ../deploy
+    to: repo/deploy
+  - from: ../docker-compose.yml
+    to: repo/docker-compose.yml
+  - from: ../docker-compose.prod.yml
+    to: repo/docker-compose.prod.yml
+  - from: ../.env.example
+    to: repo/.env.example
+  - from: ../.dockerignore
+    to: repo/.dockerignore
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: Pulse-Setup-${version}.exe
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Pulse
+
+mac:
+  target: dmg
+  category: public.app-category.productivity
+
+linux:
+  target: AppImage
+  category: Utility

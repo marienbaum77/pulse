@@ -1,0 +1,42 @@
+name: Release
+
+# Сборка установщика и публикация в GitHub Releases по тегу вида v1.0.0.
+# Использование: git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      # Версия приложения берётся из тега, чтобы имя файла совпадало с релизом.
+      - name: Sync version from tag
+        working-directory: desktop
+        shell: pwsh
+        run: npm pkg set version=$($env:GITHUB_REF_NAME -replace '^v','')
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build installer
+        working-directory: desktop
+        run: npm run dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/release/Pulse-Setup-*.exe
+          generate_release_notes: true

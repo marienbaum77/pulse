@@ -10,7 +10,7 @@ from psycopg.types.json import Jsonb
 from .. import db, events, jobs
 from ..images import ImageUnavailable, cover_quality, get_image
 from ..providers import LLMUnavailable, refresh_provider
-from ..textutil import numbers_in, split_sentences, strip_citations, strip_source_footer, truncate, utcnow, words
+from ..textutil import split_sentences, strip_citations, strip_source_footer, truncate, utcnow, words
 from . import drafts_service
 from .context import Block, build_blocks
 from .ingest import MIN_RSS_TEXT_CHARS
@@ -105,20 +105,13 @@ def normalize_generated_post(title: str, body: str, max_headline_chars: int = 12
 
 
 def check_text(body: str, citations: list[dict]) -> dict:
-    """Эвристические проверки: числа, которых нет в источниках, и корректность ссылок. Это сигнал редактору, а не гарантия фактичности."""
-    known: set[str] = set()
-    for c in citations:
-        known |= numbers_in(f"{c['title']} {c['excerpt']}")
-    clean = re.sub(r"\[\d+\]", "", body)
-    clean = re.sub(r"(?m)^\s*\d+\.\s", "", clean)
-    unsupported = sorted(numbers_in(clean) - known, key=lambda x: (len(x), x))
+    """Эвристические проверки: корректность ссылок на источники. Это сигнал редактору, а не гарантия фактичности."""
     used = {int(x) for x in re.findall(r"\[(\d+)\]", body)}
     valid = {c["n"] for c in citations}
     # короткие связки вроде «Это важно.» фактов не несут, поэтому в покрытие не входят
     sentences = [s for s in split_sentences(body) if len(words(strip_citations(s))) >= 4]
     cited = sum(1 for s in sentences if re.search(r"\[\d+\]", s))
     return {
-        "unsupported_numbers": unsupported,
         "invalid_citations": sorted(used - valid),
         "citation_coverage": round(cited / len(sentences), 2) if sentences else 1.0,
         "length": len(body),
@@ -209,8 +202,6 @@ def automatic_review(
         reasons.append("Полный текст короткой RSS-заметки не удалось получить")
     if body.strip() and _language_mismatch(body, language):
         reasons.append(f"Текст, вероятно, не на заданном языке ({language})")
-    if checks.get("unsupported_numbers"):
-        reasons.append("Есть числа, не найденные в источниках")
     if checks.get("invalid_citations"):
         reasons.append("Есть ссылки на отсутствующие источники")
     if checks.get("citation_coverage", 0) < MIN_CITATION_COVERAGE:

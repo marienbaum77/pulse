@@ -27,7 +27,7 @@ export interface ClusterDetail extends Omit<Cluster, "arrivals"> {
 export type DraftStatus = "generating" | "pending_review" | "approved" | "rejected" | "failed";
 export interface Citation { n: number; item_id: number; title: string; url: string; source: string; excerpt: string; image_url?: string | null }
 export interface DraftChecks {
-  mode?: string; unsupported_numbers?: string[]; invalid_citations?: number[]; citation_coverage?: number;
+  mode?: string; invalid_citations?: number[]; citation_coverage?: number;
   length?: number; edited?: boolean; fallback?: string;
   automatic_review?: { passed: boolean; reasons: string[]; overridden?: boolean; auto_publish_enabled?: boolean };
 }

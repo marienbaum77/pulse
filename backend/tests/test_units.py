@@ -180,17 +180,14 @@ def test_strip_citations():
 
 
 # ---------- проверки генерации ----------
-def test_check_text_flags_unsupported_numbers_and_bad_citations():
+def test_check_text_flags_bad_citations_and_coverage():
     cites = [{"n": 1, "title": "Тариф вырос на 15%", "excerpt": "Цена вырастет на 15% с 1 октября."}]
     ok = check_text("Тариф вырастет на 15% [1].", cites)
-    assert ok["unsupported_numbers"] == [] and ok["invalid_citations"] == [] and ok["citation_coverage"] == 1.0
+    assert ok["invalid_citations"] == [] and ok["citation_coverage"] == 1.0
     bad = check_text("Тариф вырастет на 25% [1]. Есть данные [3].", cites)
-    assert bad["unsupported_numbers"] == ["25"] and bad["invalid_citations"] == [3]
-
-
-def test_check_text_ignores_list_numbering():
-    cites = [{"n": 1, "title": "т", "excerpt": "Текст без чисел."}]
-    assert check_text("1. Заголовок\nТекст [1].\n\n2. Другой\nЕщё [1].", cites)["unsupported_numbers"] == []
+    assert bad["invalid_citations"] == [3]
+    # числа больше не сверяются с источниками: 25% против 15% замечанием не считается
+    assert "unsupported_numbers" not in bad
 
 
 def test_automatic_review_requires_supported_cited_content_and_length():
@@ -199,8 +196,8 @@ def test_automatic_review_requires_supported_cited_content_and_length():
     checks = check_text(body, citations)
     assert automatic_review("Тарифы изменятся", body, citations, checks, 200)["passed"]
 
-    unsupported = check_text("Тариф вырастет на 25% [1].", citations)
-    assert not automatic_review("Тарифы изменятся", "Тариф вырастет на 25% [1].", citations, unsupported, 100)["passed"]
+    invalid = check_text("Тариф вырастет на 15% [1][2].", citations)
+    assert not automatic_review("Тарифы изменятся", "Тариф вырастет на 15% [1][2].", citations, invalid, 100)["passed"]
     uncited = check_text("Тариф вырастет на 15%.", citations)
     assert "Покрытие предложений ссылками на источники ниже 50%" in automatic_review("Тарифы изменятся", "Тариф вырастет на 15%.", citations, uncited, 100)["reasons"]
     assert "Превышен лимит длины (5 символов)" in automatic_review("Тарифы изменятся", body, citations, checks, 5)["reasons"]

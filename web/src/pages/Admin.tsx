@@ -213,7 +213,7 @@ function ModelPicker({
         <Field label="Модель эмбеддингов" hint={MEMORY[embedModel] ? `Ориентир по памяти: ${MEMORY[embedModel]}` : "Нужна для сюжетов; доступны только embedding-модели"}>
           {models.length > 0 ? (
             <select className="field" value={embedModel} onChange={(e) => setEmbedModel(e.target.value)}>
-              {!embedIds.includes(embedModel) && embedModel && <option value={embedModel} disabled>{embedModel} (не embedding-модель)</option>}
+              {!embedIds.includes(embedModel) && embedModel && <option value={embedModel} disabled>{embedModel}</option>}
               {embedIds.length === 0 && <option value="" disabled>Нет embedding-моделей</option>}
               {embedIds.map((id) => <option key={id} value={id}>{id}{MEMORY[id] ? ` (${MEMORY[id]})` : ""}</option>)}
             </select>

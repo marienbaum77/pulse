@@ -112,15 +112,16 @@ def _json(r: httpx.Response) -> dict:
 
 
 async def _send_with_image(client: httpx.AsyncClient, base: str, token: str, chat_id: str, text: str, message: dict, image_url: str) -> SendResult | None:
-    """Короткий пост уходит фото с подписью; длинный — одним сообщением с картинкой над текстом (превью ссылки).
-    Возвращает None, если с картинкой не вышло и безопасно отправить обычное текстовое сообщение
-    (файл не скачался или Telegram отклонил фото ответом 4xx — значит, ничего не опубликовано)."""
+    """Картинка уходит настоящим фото, а не превью ссылки, поэтому в канале она всегда крупная.
+    Короткий пост — фото с подписью; длинный (подпись Telegram ограничена 1024 символами) — фото отдельным
+    сообщением, сразу за ним текст. Возвращает None, если фото не вышло и безопасно отправить текст без картинки
+    (файл не скачался или Telegram отклонил фото — значит, ничего не опубликовано)."""
+    try:
+        data, ctype = await download_image(image_url)
+    except Exception as e:
+        log.info("image download failed (%s): %s", image_url, e)
+        return None
     if len(text) <= CAPTION_LIMIT:
-        try:
-            data, ctype = await download_image(image_url)
-        except Exception as e:
-            log.info("image download failed (%s): %s", image_url, e)
-            return None
         r = await client.post(
             f"{base}/bot{token}/sendPhoto",
             data={"chat_id": chat_id, "caption": text, "parse_mode": "HTML"},
@@ -131,15 +132,17 @@ async def _send_with_image(client: httpx.AsyncClient, base: str, token: str, cha
             log.info("sendPhoto rejected, falling back to text: %s", res.error)
             return None
         return res
-    message.pop("disable_web_page_preview", None)
-    message["link_preview_options"] = {"url": image_url, "show_above_text": True, "prefer_large_media": True}
-    r = await client.post(f"{base}/bot{token}/sendMessage", json=message)
-    res = classify_telegram(r.status_code, _json(r))
-    if res.kind == "failed" and r.status_code == 400:
-        message.pop("link_preview_options", None)
-        message["disable_web_page_preview"] = True
+    photo = await client.post(
+        f"{base}/bot{token}/sendPhoto",
+        data={"chat_id": chat_id},
+        files={"photo": ("image", data, ctype)},
+    )
+    photo_res = classify_telegram(photo.status_code, _json(photo))
+    if photo_res.kind != "sent":
+        log.info("sendPhoto rejected for long post, falling back to text: %s", photo_res.error)
         return None
-    return res
+    r = await client.post(f"{base}/bot{token}/sendMessage", json=message)
+    return classify_telegram(r.status_code, _json(r))
 
 
 async def send_webhook(channel: dict, draft: dict, pub: dict) -> SendResult:
