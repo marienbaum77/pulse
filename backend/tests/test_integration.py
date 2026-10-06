@@ -816,7 +816,8 @@ async def test_telegram_uploads_photo_for_short_and_long_posts(monkeypatch):
     def handler(method, path, headers, body):
         if path.startswith("/img/"):
             return 200, {"Content-Type": "image/png"}, b"\x89PNG-bytes"
-        calls.append((path.rsplit("/", 1)[-1], headers.get("content-type", ""), body))
+        if path.startswith("/bot"):
+            calls.append((path.rsplit("/", 1)[-1], headers.get("content-type", ""), body))
         return 200, {"Content-Type": "application/json"}, '{"ok":true,"result":{"message_id":7}}'
 
     async with MiniServer(handler) as srv:
@@ -826,17 +827,32 @@ async def test_telegram_uploads_photo_for_short_and_long_posts(monkeypatch):
         assert (await publisher.send_telegram(channel, short, {"id": 1})).kind == "sent"
         assert calls[-1][0] == "sendPhoto" and calls[-1][1].startswith("multipart/form-data") and b"PNG-bytes" in calls[-1][2]
 
-        # длинный текст не помещается в подпись к фото: картинка уходит отдельным фото, затем текст —
-        # так в канале изображение крупное, а не мелкое превью ссылки
-        long_draft = {**short, "id": 2, "body": "Длинный пост. " * 100}
+        # длинный текст не помещается в подпись к фото: отправляем одно сообщение с превью над текстом
+        long_draft = {
+            **short,
+            "id": 2,
+            "body": "Длинный пост. " * 100,
+            "citations": [{
+                "n": 1,
+                "url": f"{srv.url}/article/1",
+                "image_url": f"{srv.url}/img/1.png",
+                "source": "Источник",
+            }],
+        }
         assert (await publisher.send_telegram(channel, long_draft, {"id": 1})).kind == "sent"
-        assert [c[0] for c in calls[-2:]] == ["sendPhoto", "sendMessage"]
-        assert b"PNG-bytes" in calls[-2][2]
-        assert "link_preview_options" not in json.loads(calls[-1][2])
+        assert calls[-1][0] == "sendMessage"
+        long_message = json.loads(calls[-1][2])
+        assert long_message["link_preview_options"] == {
+            "url": long_draft["citations"][0]["url"],
+            "show_above_text": True,
+            "prefer_large_media": True,
+        }
+        assert len(long_message["text"]) > publisher.CAPTION_LIMIT
 
         broken = {**short, "id": 3, "image_url": f"{srv.url}/missing.txt"}
-        assert (await publisher.send_telegram(channel, broken, {"id": 1})).kind == "sent"
-        assert calls[-1][0] == "sendMessage"  # картинка не скачалась — пост уходит текстом, а не теряется
+        before = len(calls)
+        assert (await publisher.send_telegram(channel, broken, {"id": 1})).kind == "failed"
+        assert len(calls) == before  # не публикуем без картинки, указанной в черновике
 
 
 async def test_scheduled_generation_jobs_are_deduplicated():

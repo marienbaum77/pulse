@@ -22,6 +22,8 @@ log = logging.getLogger("pulse.images")
 MAX_IMAGE_URL = 1000
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+IMAGE_RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
+IMAGE_RETRY_DELAYS = (0.5, 1.5)
 # Минимальный размер обложки: мелкие картинки (логотипы, иконки, старые превью) на посте выглядят размыто.
 MIN_COVER_WIDTH = 300
 MIN_COVER_HEIGHT = 150
@@ -146,6 +148,24 @@ def feed_entry_image(entry, body_html: str) -> str | None:
 
 async def download_image(url: str) -> tuple[bytes, str]:
     """Скачивает картинку с проверкой SSRF на каждом редиректе, лимитом размера и белым списком типов (без SVG)."""
+    for attempt in range(len(IMAGE_RETRY_DELAYS) + 1):
+        try:
+            return await _download_image_once(url)
+        except httpx.TransportError:
+            if attempt == len(IMAGE_RETRY_DELAYS):
+                raise
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code not in IMAGE_RETRY_STATUSES or attempt == len(IMAGE_RETRY_DELAYS):
+                raise
+            retry_after = e.response.headers.get("retry-after", "")
+            if retry_after.isdigit():
+                await asyncio.sleep(min(float(retry_after), 10.0))
+                continue
+        await asyncio.sleep(IMAGE_RETRY_DELAYS[attempt])
+    raise AssertionError("unreachable")
+
+
+async def _download_image_once(url: str) -> tuple[bytes, str]:
     headers = {"User-Agent": "PulseBot/1.0 (+self-hosted)", "Accept": "image/*"}
     current = url
     async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0), follow_redirects=False, headers=headers) as client:

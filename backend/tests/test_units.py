@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -5,6 +6,7 @@ import httpx
 import numpy as np
 import pytest
 
+from app import images, publisher
 from app.pipeline import scoring
 from app.pipeline.clustering_core import Cluster, OnlineClusterer
 from app.pipeline.context import Block
@@ -164,6 +166,99 @@ def test_published_post_has_no_citation_markers_but_has_source_links():
 def test_sources_footer_skips_citations_without_url():
     assert sources_footer([{"n": 1, "source": "Без ссылки", "url": ""}]) == ""
     assert sources_footer([]) == ""
+
+
+async def test_telegram_long_post_keeps_image_preview_with_text(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 7}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(publisher.httpx, "AsyncClient", lambda **_: client)
+
+    async def unexpected_download(*_):
+        pytest.fail("long posts should use Telegram link previews without downloading the image")
+
+    monkeypatch.setattr(publisher, "download_image", unexpected_download)
+    monkeypatch.setenv("T_BOT", "OK")
+    draft = {
+        "id": 1,
+        "title": "Заголовок",
+        "body": "Длинный пост. " * 100,
+        "citations": [{
+            "n": 1,
+            "url": "https://source.example.test/story",
+            "image_url": "https://images.example.test/cover.jpg",
+            "source": "Источник",
+        }],
+        "image_url": "https://images.example.test/cover.jpg",
+    }
+    channel = {"config": {"chat_id": "@c", "token_env": "T_BOT", "api_base": "https://api.telegram.test"}}
+
+    result = await publisher.send_telegram(channel, draft, {"id": 1})
+
+    assert result.kind == "sent"
+    assert len(requests) == 1
+    assert requests[0].url.path.endswith("/sendMessage")
+    payload = json.loads(requests[0].content)
+    assert len(payload["text"]) > publisher.CAPTION_LIMIT
+    assert payload["link_preview_options"] == {
+        "url": draft["citations"][0]["url"],
+        "show_above_text": True,
+        "prefer_large_media": True,
+    }
+
+
+async def test_image_download_retries_temporary_transport_failure(monkeypatch):
+    attempts = 0
+
+    def handler(request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectError("", request=request)
+        return httpx.Response(200, headers={"Content-Type": "image/png"}, content=b"png")
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(images.httpx, "AsyncClient", lambda **_: async_client(transport=httpx.MockTransport(handler)))
+
+    async def allow_url(_):
+        return None
+
+    monkeypatch.setattr(images, "check_url", allow_url)
+    monkeypatch.setattr(images.asyncio, "sleep", lambda _: _immediate_sleep())
+    data, content_type = await images.download_image("https://images.example.test/cover.png")
+
+    assert data == b"png"
+    assert content_type == "image/png"
+    assert attempts == 2
+
+
+async def _immediate_sleep():
+    return None
+
+
+async def test_image_download_failure_retries_publication_instead_of_dropping_photo(monkeypatch):
+    async def unavailable(_):
+        raise httpx.ConnectError("", request=httpx.Request("GET", "https://images.example.test/cover.png"))
+
+    monkeypatch.setattr(publisher, "download_image", unavailable)
+    monkeypatch.setenv("T_BOT", "OK")
+    channel = {"config": {"chat_id": "@c", "token_env": "T_BOT", "api_base": "https://api.telegram.test"}}
+    draft = {
+        "id": 1,
+        "title": "Заголовок",
+        "body": "Текст",
+        "citations": [],
+        "image_url": "https://images.example.test/cover.png",
+    }
+
+    result = await publisher.send_telegram(channel, draft, {"id": 1})
+
+    assert result.kind == "retry"
+    assert "ConnectError" in result.error
 
 
 def test_strip_source_footer_removes_model_generated_reference_list():
