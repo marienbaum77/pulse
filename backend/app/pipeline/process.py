@@ -517,6 +517,7 @@ async def process_project(project_id: int) -> dict:
         embedded = await embed_new(project, provider)
         stats = await cluster_new(project)
         stats["lexical_duplicates"] = dedup_stats.get("duplicates", 0)
+        stats["duplicates"] = stats.get("duplicates", 0) + stats["lexical_duplicates"]
         stats["embedded"] = embedded
         stats["scored"] = await refresh_clusters(project)
         # Оценка интересности сюжетов языковой моделью (после скоринга)

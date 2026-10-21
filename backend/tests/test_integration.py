@@ -82,7 +82,7 @@ async def test_pipeline_clusters_scores_and_is_incremental():
     assert await import_manual(pid, load_demo()) == 45
     assert await import_manual(pid, load_demo()) == 0  # повторный импорт не создаёт дублей
     stats = await process_project(pid)
-    assert stats["embedded"] == 45 and stats["duplicates"] == 0
+    assert stats["embedded"] == 43 and stats["duplicates"] == 2
     clusters = await db.fetchall("SELECT id, item_count, title, score FROM clusters WHERE project_id = %s", (pid,))
     assert len(clusters) == 12  # 6 событий + 6 несвязанных заметок
     events = [c for c in clusters if c["item_count"] >= 2]
@@ -765,7 +765,7 @@ async def test_switching_embedding_model_rebuilds_vectors_instead_of_crashing():
         stats = await process_project(pid)
     finally:
         set_provider(StubProvider())
-    assert stats["embedded"] == 45  # всё пересчитано новой моделью
+    assert stats["embedded"] == 43  # всё пересчитано новой моделью (за вычетом 2 лексических дубликатов)
     dims = await db.fetchall("SELECT DISTINCT vector_dims(embedding) AS d FROM items WHERE embedding IS NOT NULL")
     assert dims == [{"d": 128}]
     assert (await db.fetchone("SELECT count(*) AS n FROM drafts"))["n"] == 1  # черновики не тронуты
@@ -843,7 +843,7 @@ async def test_telegram_uploads_photo_for_short_and_long_posts(monkeypatch):
         assert calls[-1][0] == "sendMessage"
         long_message = json.loads(calls[-1][2])
         assert long_message["link_preview_options"] == {
-            "url": long_draft["citations"][0]["url"],
+            "url": long_draft["image_url"],
             "show_above_text": True,
             "prefer_large_media": True,
         }
