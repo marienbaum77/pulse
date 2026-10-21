@@ -39,7 +39,7 @@ async def clear(project_id: int) -> int:
     return len(rows)
 
 
-async def approve(draft_id: int, user_id: int | None) -> bool:
+async def approve(draft_id: int, user_id: int | None, channel_ids: list[int] | None = None) -> bool:
     """True — черновик утверждён сейчас; False — он уже не в статусе pending_review."""
     async with db.pool.connection() as conn:
         async with conn.transaction():
@@ -47,7 +47,13 @@ async def approve(draft_id: int, user_id: int | None) -> bool:
             d = await cur.fetchone()
             if d is None or d["status"] != "pending_review":
                 return False
-            cur = await conn.execute("SELECT id FROM channels WHERE project_id = %s AND enabled", (d["project_id"],))
+            if channel_ids:
+                cur = await conn.execute(
+                    "SELECT id FROM channels WHERE project_id = %s AND enabled AND id = ANY(%s)",
+                    (d["project_id"], channel_ids),
+                )
+            else:
+                cur = await conn.execute("SELECT id FROM channels WHERE project_id = %s AND enabled", (d["project_id"],))
             channels = await cur.fetchall()
             if not channels:
                 raise NoChannels()

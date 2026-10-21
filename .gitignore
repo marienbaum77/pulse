@@ -8,3 +8,5 @@ desktop/release/
 .venv/
 backups/
 *.tsbuildinfo
+*.pdf
+render_resume*.py

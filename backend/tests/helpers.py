@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 from pathlib import Path
 
 from psycopg.types.json import Jsonb
@@ -12,7 +11,7 @@ DATA = Path(__file__).resolve().parents[2] / "sample_data" / "demo_news.jsonl"
 
 
 def load_demo() -> list[dict]:
-    return [json.loads(l) for l in DATA.read_text(encoding="utf-8").splitlines() if l.strip()]
+    return [json.loads(line) for line in DATA.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 async def make_project(threshold: float = 0.35, channel: bool = True, **over) -> int:
@@ -60,7 +59,7 @@ class MiniServer:
             head = await reader.readuntil(b"\r\n\r\n")
             lines = head.decode().split("\r\n")
             method, path, _ = lines[0].split(" ", 2)
-            headers = {k.lower(): v for k, v in (l.split(": ", 1) for l in lines[1:] if ": " in l)}
+            headers = {k.lower(): v for k, v in (line.split(": ", 1) for line in lines[1:] if ": " in line)}
             body = await reader.readexactly(int(headers.get("content-length", 0))) if headers.get("content-length") else b""
             res = self.handler(method, path, headers, body)
             if res is None:

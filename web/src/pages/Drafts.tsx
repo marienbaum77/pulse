@@ -5,8 +5,8 @@ import { AlertTriangle, ArrowLeft, Check, ChevronLeft, ChevronRight, ExternalLin
 import { api } from "../lib/api";
 import { useAuth, useProject, useToast } from "../lib/context";
 import { ago, stripCitations } from "../lib/format";
-import { DRAFT_STATUS, PUB_STATUS } from "../lib/labels";
-import type { Draft, DraftChecks, DraftListItem, GenerationJob, Project } from "../lib/types";
+import { CHANNEL_TYPES, DRAFT_STATUS, PUB_STATUS } from "../lib/labels";
+import type { Channel, Draft, DraftChecks, DraftListItem, GenerationJob, Project } from "../lib/types";
 import { NoProject } from "../components/NoProject";
 import { Thumb } from "../components/Thumb";
 import { Badge, Empty, ErrorNote, PageHeader, Spinner, Tabs } from "../components/ui";
@@ -21,6 +21,7 @@ const TABS = [
 export default function Drafts() {
   const { id } = useParams();
   const nav = useNavigate();
+  const { can } = useAuth();
   const { project, loading } = useProject();
   const toast = useToast();
   const qc = useQueryClient();
@@ -38,12 +39,30 @@ export default function Drafts() {
     refetchInterval: 5000,
   });
   const clearAll = useMutation({
-    mutationFn: () => api<{ deleted: number }>("/drafts", { method: "DELETE", params: { project_id: project!.id } }),
-    onSuccess: ({ deleted }) => {
-      toast(`Удалено черновиков: ${deleted}`);
+    mutationFn: () => api<{ deleted: number; cancelled_jobs?: number }>("/drafts", { method: "DELETE", params: { project_id: project!.id } }),
+    onSuccess: ({ deleted, cancelled_jobs }) => {
+      const msg = cancelled_jobs
+        ? `Удалено черновиков: ${deleted}, отменено генераций: ${cancelled_jobs}`
+        : `Удалено черновиков: ${deleted}`;
+      toast(msg);
       qc.invalidateQueries({ queryKey: ["drafts"] });
+      qc.invalidateQueries({ queryKey: ["generation-queue"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["clusters"] });
+    },
+    onError: (e: Error) => toast(e.message, "bad"),
+  });
+  const cancelJob = useMutation({
+    mutationFn: (jobId: number) =>
+      api(`/generation-queue/${jobId}`, {
+        method: "DELETE",
+        params: { project_id: project!.id },
+      }),
+    onSuccess: () => {
+      toast("Генерация отменена");
+      qc.invalidateQueries({ queryKey: ["generation-queue"] });
+      qc.invalidateQueries({ queryKey: ["drafts"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (e: Error) => toast(e.message, "bad"),
   });
@@ -51,7 +70,8 @@ export default function Drafts() {
   if (!project) return <NoProject />;
 
   const all = list.data ?? [];
-  const clearable = all.some((d) => ["pending_review", "rejected", "failed"].includes(d.status));
+  const queued = generationQueue.data ?? [];
+  const clearable = all.some((d) => ["pending_review", "rejected", "failed"].includes(d.status)) || queued.length > 0;
   const pendingIds = all.filter((d) => d.status === "pending_review").map((d) => d.id);
 
   if (id) {
@@ -78,7 +98,6 @@ export default function Drafts() {
 
   const def = TABS.find((t) => t.id === tab)!;
   const rows = all.filter(def.match);
-  const queued = generationQueue.data ?? [];
   const counts = Object.fromEntries(TABS.map((t) => [t.id, all.filter(t.match).length + (t.id === "generating" ? queued.length : 0)]));
 
   return (
@@ -99,13 +118,35 @@ export default function Drafts() {
         <ul>
           {tab === "generating" && queued.map((job) => (
             <li key={`job-${job.id}`} className="rule-b">
-              <div className="block py-3.5 -mx-2 px-2">
-                <span className="block font-serif text-[17px] font-medium leading-snug">{job.title}</span>
-                <span className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] text-muted mt-0.5">
-                  <span>{job.kind === "digest" ? "Дайджест" : "Пост"}</span>
-                  <span>{ago(job.created_at)}</span>
-                  <Badge tone="info">Ожидает генерации</Badge>
-                </span>
+              <div className="flex items-center justify-between py-3.5 -mx-2 px-2 gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block w-2 h-2 rounded-full bg-accent animate-pulse shrink-0" />
+                    <span className="font-serif text-[17px] font-medium leading-snug break-words">{job.title}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] text-muted mt-1">
+                    <span>{job.kind === "digest" ? "Дайджест" : "Пост"}</span>
+                    <span>{ago(job.created_at)}</span>
+                    <Badge tone="info">Идёт обработка</Badge>
+                    <span className="text-muted/80 text-[12px] hidden sm:inline">
+                      Подбираем лучший сюжет из собранных новостей и пишем текст
+                    </span>
+                  </div>
+                </div>
+                {can("editor") && (
+                  <button
+                    className="btn btn-secondary text-xs shrink-0"
+                    disabled={cancelJob.isPending}
+                    onClick={() => {
+                      if (window.confirm("Отменить эту задачу генерации?")) {
+                        cancelJob.mutate(job.id);
+                      }
+                    }}
+                    title="Отменить задачу генерации"
+                  >
+                    Отменить
+                  </button>
+                )}
               </div>
             </li>
           ))}
@@ -141,9 +182,17 @@ function DraftEditor({ id, project, onDecided }: { id: number; project: Project;
   const qc = useQueryClient();
   const nav = useNavigate();
   const q = useQuery({ queryKey: ["draft", id], queryFn: () => api<Draft>(`/drafts/${id}`) });
+  const channelsQ = useQuery({
+    queryKey: ["channels", project.id],
+    queryFn: () => api<Channel[]>("/channels", { params: { project_id: project.id } }),
+  });
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [selectedChannels, setSelectedChannels] = useState<number[] | null>(null);
   const d = q.data;
+
+  const enabledChannels = (channelsQ.data ?? []).filter((c) => c.enabled);
+  const activeChannelIds = selectedChannels ?? enabledChannels.map((c) => c.id);
 
   useEffect(() => {
     if (d) { setTitle(d.title); setBody(d.body); }
@@ -168,7 +217,10 @@ function DraftEditor({ id, project, onDecided }: { id: number; project: Project;
   const approve = useMutation({
     mutationFn: async () => {
       if (dirty) await api(`/drafts/${id}`, { method: "PATCH", body: { title, body } });
-      return api<{ already: boolean; suppressed: number }>(`/drafts/${id}/approve`, { method: "POST" });
+      return api<{ already: boolean; suppressed: number }>(`/drafts/${id}/approve`, {
+        method: "POST",
+        body: { channel_ids: activeChannelIds },
+      });
     },
     onSuccess: ({ suppressed }) => { toast(suppressed ? `Утверждено; точных дублей не отправлено: ${suppressed}` : "Утверждено. Публикация поставлена в очередь"); refresh(); qc.invalidateQueries({ queryKey: ["publications"] }); onDecided(); },
     onError: fail,
@@ -231,9 +283,53 @@ function DraftEditor({ id, project, onDecided }: { id: number; project: Project;
             </div>
           </details>
 
+          {can("editor") && d.status === "pending_review" && enabledChannels.length > 0 && (
+            <div className="mt-6 mb-2 p-3.5 bg-sunken/60 rounded border border-ink/5">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-muted uppercase tracking-wider">Каналы публикации:</span>
+                <span className="text-xs text-muted">Выбрано: {activeChannelIds.length} из {enabledChannels.length}</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {enabledChannels.map((ch) => {
+                  const isSelected = activeChannelIds.includes(ch.id);
+                  return (
+                    <button
+                      key={ch.id}
+                      type="button"
+                      className={`btn btn-sm text-xs py-1 px-2.5 transition-colors ${
+                        isSelected ? "btn-primary" : "btn-ghost text-muted border border-ink/10"
+                      }`}
+                      onClick={() => {
+                        if (isSelected) {
+                          setSelectedChannels(activeChannelIds.filter((cid) => cid !== ch.id));
+                        } else {
+                          setSelectedChannels([...activeChannelIds, ch.id]);
+                        }
+                      }}
+                    >
+                      {isSelected ? "✓ " : ""}{ch.name} <span className="opacity-70 text-[11px]">({CHANNEL_TYPES[ch.type]})</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {activeChannelIds.length === 0 && (
+                <p className="text-bad text-xs mt-2">Выберите хотя бы один канал доставки для отправки</p>
+              )}
+            </div>
+          )}
+
           {can("editor") && (
-            <div className="flex flex-wrap items-center gap-2 mt-6">
-              {d.status === "pending_review" && <button className="btn btn-primary h-10" onClick={() => approve.mutate()} disabled={busy}><Check size={16} />Утвердить и отправить</button>}
+            <div className="flex flex-wrap items-center gap-2 mt-4">
+              {d.status === "pending_review" && (
+                <button
+                  className="btn btn-primary h-10"
+                  onClick={() => approve.mutate()}
+                  disabled={busy || (enabledChannels.length > 0 && activeChannelIds.length === 0)}
+                  title={enabledChannels.length > 0 && activeChannelIds.length === 0 ? "Выберите хотя бы один канал доставки" : undefined}
+                >
+                  <Check size={16} />Утвердить и отправить
+                </button>
+              )}
               {editable && <button className="btn" onClick={() => save.mutate()} disabled={busy || !dirty}>Сохранить правки</button>}
               {(d.status === "pending_review" || d.status === "failed") && <button className="btn" onClick={() => regen.mutate()} disabled={busy}>Написать заново</button>}
               {(d.status === "pending_review" || d.status === "failed") && <button className="btn btn-danger" onClick={() => reject.mutate()} disabled={busy}>Отклонить</button>}

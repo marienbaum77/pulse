@@ -48,7 +48,7 @@ def handler(kind: str):
 
 async def enqueue(kind: str, payload: dict, dedupe_key: str | None = None, delay_seconds: float = 0) -> int | None:
     row = await db.fetchone(
-        "WITH queue_lock AS MATERIALIZED (SELECT pg_advisory_xact_lock(747002) WHERE %s::text IS NOT NULL) "
+        f"WITH queue_lock AS MATERIALIZED (SELECT pg_advisory_xact_lock({int(db.AdvisoryLock.JOB_QUEUE)}) WHERE %s::text IS NOT NULL) "
         "INSERT INTO jobs(kind, payload, dedupe_key, run_at) "
         "SELECT %s, %s, %s, now() + make_interval(secs => %s) FROM (VALUES (1)) AS seed(n) "
         "LEFT JOIN queue_lock ON true "
@@ -72,7 +72,7 @@ async def expedite_queued(dedupe_key: str) -> int | None:
 async def queued_generations(project_id: int) -> list[dict]:
     return await db.fetchall(
         "SELECT j.id, j.status, j.created_at, COALESCE(j.payload->>'kind', 'post') AS kind, "
-        "COALESCE(topics.title, CASE WHEN j.payload ? 'schedule_id' THEN 'Плановая генерация' ELSE 'Подбор сюжета' END) AS title "
+        "COALESCE(topics.title, CASE WHEN j.payload ? 'schedule_id' THEN 'Плановая генерация' ELSE 'Автоподбор лучшего сюжета' END) AS title "
         "FROM jobs j LEFT JOIN LATERAL ("
         "SELECT string_agg(c.title, ' · ' ORDER BY c.score DESC NULLS LAST, c.id) AS title "
         "FROM jsonb_array_elements_text(COALESCE(j.payload->'cluster_ids', '[]'::jsonb)) AS cid(value) "
@@ -84,14 +84,34 @@ async def queued_generations(project_id: int) -> list[dict]:
     )
 
 
+async def cancel_job(job_id: int, project_id: int | None = None) -> bool:
+    """Отменяет задачу в очереди или в процессе выполнения."""
+    where = ["id = %s", "status IN ('queued', 'running')"]
+    params: list[object] = [job_id]
+    if project_id is not None:
+        where.append("payload->>'project_id' = %s")
+        params.append(str(project_id))
+    row = await db.fetchone(
+        f"UPDATE jobs SET status = 'failed', finished_at = now(), last_error = 'Отменено пользователем' "
+        f"WHERE {' AND '.join(where)} RETURNING id, payload",
+        params,
+    )
+    if row:
+        pid = row.get("payload", {}).get("project_id") if isinstance(row.get("payload"), dict) else None
+        if pid:
+            await events.notify("generation", project_id=int(pid))
+        return True
+    return False
+
+
 def _kind_filter(include_kinds: tuple[str, ...] | None, exclude_kinds: tuple[str, ...] | None) -> tuple[str, list[object]]:
     clauses: list[str] = []
     params: list[object] = []
     if include_kinds:
-        clauses.append(f"kind = ANY(%s)")
+        clauses.append("kind = ANY(%s)")
         params.append(list(include_kinds))
     if exclude_kinds:
-        clauses.append(f"kind <> ALL(%s)")
+        clauses.append("kind <> ALL(%s)")
         params.append(list(exclude_kinds))
     return (" AND ".join(clauses), params)
 
@@ -158,7 +178,7 @@ async def defer(job: dict, delay: float) -> None:
 
 async def reclaim_expired() -> int:
     return await db.execute(
-        "WITH queue_lock AS MATERIALIZED (SELECT pg_advisory_xact_lock(747002)), "
+        f"WITH queue_lock AS MATERIALIZED (SELECT pg_advisory_xact_lock({int(db.AdvisoryLock.JOB_QUEUE)})), "
         "expired AS MATERIALIZED ("
         "SELECT j.id, j.dedupe_key FROM jobs j CROSS JOIN queue_lock "
         "WHERE j.status = 'running' AND j.locked_until < now() FOR UPDATE OF j"

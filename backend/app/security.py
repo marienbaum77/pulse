@@ -14,6 +14,22 @@ ROLE_RANK = {"viewer": 0, "editor": 1, "admin": 2}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _ph = PasswordHasher()
 _fails: dict[str, list[float]] = defaultdict(list)
+_LOCKOUT_WINDOW = 600  # секунд
+_CLEANUP_INTERVAL = 60  # секунд — как часто чистить устаревшие записи
+_last_cleanup: float = 0.0
+
+
+def _cleanup_fails() -> None:
+    """Удаляет IP-записи, все отметки которых старше окна блокировки (защита от утечки памяти)."""
+    global _last_cleanup
+    now = time.time()
+    if now - _last_cleanup < _CLEANUP_INTERVAL:
+        return
+    _last_cleanup = now
+    cutoff = now - _LOCKOUT_WINDOW
+    stale = [ip for ip, times in _fails.items() if not times or times[-1] < cutoff]
+    for ip in stale:
+        del _fails[ip]
 
 
 def hash_password(password: str) -> str:
@@ -33,8 +49,9 @@ def make_token(user_id: int) -> str:
 
 
 def check_login_rate(ip: str) -> None:
+    _cleanup_fails()
     now = time.time()
-    _fails[ip] = [t for t in _fails[ip] if now - t < 600]
+    _fails[ip] = [t for t in _fails[ip] if now - t < _LOCKOUT_WINDOW]
     if len(_fails[ip]) >= 8:
         raise HTTPException(429, "Слишком много неудачных попыток входа. Повторите через 10 минут.")
 

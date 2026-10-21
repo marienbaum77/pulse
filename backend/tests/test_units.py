@@ -205,7 +205,7 @@ async def test_telegram_long_post_keeps_image_preview_with_text(monkeypatch):
     payload = json.loads(requests[0].content)
     assert len(payload["text"]) > publisher.CAPTION_LIMIT
     assert payload["link_preview_options"] == {
-        "url": draft["citations"][0]["url"],
+        "url": draft["image_url"],
         "show_above_text": True,
         "prefer_large_media": True,
     }
@@ -222,12 +222,7 @@ async def test_image_download_retries_temporary_transport_failure(monkeypatch):
         return httpx.Response(200, headers={"Content-Type": "image/png"}, content=b"png")
 
     async_client = httpx.AsyncClient
-    monkeypatch.setattr(images.httpx, "AsyncClient", lambda **_: async_client(transport=httpx.MockTransport(handler)))
-
-    async def allow_url(_):
-        return None
-
-    monkeypatch.setattr(images, "check_url", allow_url)
+    monkeypatch.setattr(images, "guarded_client", lambda **_: async_client(transport=httpx.MockTransport(handler)))
     monkeypatch.setattr(images.asyncio, "sleep", lambda _: _immediate_sleep())
     data, content_type = await images.download_image("https://images.example.test/cover.png")
 
@@ -259,6 +254,59 @@ async def test_image_download_failure_retries_publication_instead_of_dropping_ph
 
     assert result.kind == "retry"
     assert "ConnectError" in result.error
+
+
+class FakeTelegram:
+    """Модель Telegram, которая запоминает, какая картинка реально попала бы в канал, а не только какие запросы пришли.
+    Фото в sendPhoto — это загруженный файл. Превью ссылки в sendMessage Telegram строит сам по адресу: прямая ссылка
+    на картинку даёт картинку, обычная страница — только её og:image (у страницы статьи его может не быть)."""
+
+    def __init__(self, image_url: str, image_bytes: bytes, page_urls_with_og_image: frozenset[str] = frozenset()):
+        self.image_url, self.image_bytes = image_url, image_bytes
+        self.pages_with_og_image = page_urls_with_og_image
+        self.delivered_image: bytes | None = None
+        self.calls: list[str] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        self.calls.append(method)
+        if method == "sendPhoto":
+            self.delivered_image = self.image_bytes if self.image_bytes in request.content else None
+        elif method == "sendMessage":
+            preview = json.loads(request.content).get("link_preview_options") or {}
+            url = preview.get("url")
+            if url == self.image_url or url in self.pages_with_og_image:
+                self.delivered_image = self.image_bytes
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 7}})
+
+
+@pytest.mark.parametrize("body", ["Короткий пост. ", "Длинный пост. " * 100], ids=["short", "long"])
+async def test_published_telegram_post_contains_the_editor_image(monkeypatch, body):
+    image_url = "https://images.example.test/cover.jpg"
+    image_bytes = b"\xff\xd8\xff-cover-bytes"
+    fake = FakeTelegram(image_url, image_bytes)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(fake.handler))
+    monkeypatch.setattr(publisher.httpx, "AsyncClient", lambda **_: client)
+
+    async def download(url):
+        assert url == image_url
+        return image_bytes, "image/jpeg"
+
+    monkeypatch.setattr(publisher, "download_image", download)
+    monkeypatch.setenv("T_BOT", "OK")
+    draft = {
+        "id": 1,
+        "title": "Заголовок",
+        "body": body,
+        "citations": [{"n": 1, "url": "https://source.example.test/story", "image_url": image_url, "source": "Источник"}],
+        "image_url": image_url,
+    }
+    channel = {"config": {"chat_id": "@c", "token_env": "T_BOT", "api_base": "https://api.telegram.test"}}
+
+    result = await publisher.send_telegram(channel, draft, {"id": 1})
+
+    assert result.kind == "sent"
+    assert fake.delivered_image == image_bytes, f"публикация отмечена отправленной, но картинка в канал не попала (запросы: {fake.calls})"
 
 
 def test_strip_source_footer_removes_model_generated_reference_list():
@@ -716,3 +764,330 @@ def test_max_aspect_similarity_takes_closest_aspect():
     # заголовок ближе ко второму аспекту (0.6), а не к первому (0.0)
     single = max_aspect_similarity(np.asarray([[1.0, 0.0]], dtype=np.float32), np.asarray([[0.0, 1.0], [0.6, 0.8]], dtype=np.float32))
     assert abs(float(single[0]) - 0.6) < 1e-6
+
+
+def test_automatic_review_flags_low_interest():
+    from app.pipeline.generate import automatic_review
+
+    citations = [{"n": 1, "article_content_status": "ok", "content_length": 500}]
+    checks = {"invalid_citations": [], "citation_coverage": 1.0, "length": 150}
+
+    # Нормальный интерес (>= 3.0) — проходит
+    res_ok = automatic_review("Заголовок новости", "Текст новости на русском языке [1]. " * 5, citations, checks, 1000, interest=7.5)
+    assert res_ok["passed"] is True
+
+    # Низкий интерес (< 3.0) — блокирует с причиной
+    res_low = automatic_review("Заголовок новости", "Текст новости на русском языке [1]. " * 5, citations, checks, 1000, interest=2.0, interest_reason="Рекламный релиз")
+    assert res_low["passed"] is False
+    assert any("Модель сочла сюжет малоинтересным (2.0/10): Рекламный релиз" in r for r in res_low["reasons"])
+
+
+def test_rate_limiter_memory_cleanup():
+    import time
+    from app import security
+
+    # Симулируем старые записи
+    old_time = time.time() - 1000
+    security._fails["192.0.2.1"] = [old_time]
+    security._fails["192.0.2.2"] = [time.time()]
+    security._last_cleanup = 0.0  # форсируем очистку
+
+    security._cleanup_fails()
+
+    assert "192.0.2.1" not in security._fails
+    assert "192.0.2.2" in security._fails
+
+
+def test_auth_trusted_proxy_checks():
+    from app.api.auth import _is_trusted_proxy
+
+    assert _is_trusted_proxy("127.0.0.1") is True
+    assert _is_trusted_proxy("::1") is True
+    assert _is_trusted_proxy("172.18.0.5") is True
+    assert _is_trusted_proxy("8.8.8.8") is False
+    assert _is_trusted_proxy("invalid-ip") is False
+
+
+def test_advisory_locks_registry():
+    from app.db import AdvisoryLock
+
+    assert AdvisoryLock.MIGRATIONS == 747001
+    assert AdvisoryLock.JOB_QUEUE == 747002
+    assert AdvisoryLock.PROJECT_PIPELINE == 1
+    assert AdvisoryLock.PROJECT_TOPIC_BACKFILL == 3
+
+
+async def test_discord_publisher_sends_rich_embed(monkeypatch):
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "discord-msg-123"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(publisher.httpx, "AsyncClient", lambda **_: client)
+
+    channel = {"id": 5, "config": {"webhook_url": "https://discord.com/api/webhooks/123/xyz"}}
+    draft = {
+        "id": 1,
+        "title": "Новость дня",
+        "body": "Текст новости [1].",
+        "citations": [{"n": 1, "source": "Хабр", "url": "https://habr.com/1"}],
+        "image_url": "https://images.example.test/cover.jpg",
+    }
+    res = await publisher.send_discord(channel, draft, {"id": 10})
+    assert res.kind == "sent"
+    assert res.external_id == "discord-msg-123"
+    assert len(sent) == 1
+    embed = sent[0]["embeds"][0]
+    assert embed["title"] == "Новость дня"
+    assert "Текст новости" in embed["description"]
+    assert embed["image"]["url"] == "https://images.example.test/cover.jpg"
+    assert any("[Хабр](https://habr.com/1)" in f["value"] for f in embed["fields"])
+
+
+async def test_vk_publisher_posts_to_wall(monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"response": {"post_id": 456}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(publisher.httpx, "AsyncClient", lambda **_: client)
+
+    channel = {"id": 6, "config": {"owner_id": "-123456", "access_token": "vk-token"}}
+    draft = {
+        "id": 2,
+        "title": "Заголовок ВК",
+        "body": "Текст для стены [1].",
+        "citations": [{"n": 1, "source": "РИА", "url": "https://ria.test/1"}],
+        "image_url": None,
+    }
+    res = await publisher.send_vk(channel, draft, {"id": 11})
+    assert res.kind == "sent"
+    assert res.external_id == "vk_-123456_456"
+    assert any("wall.post" in c for c in calls)
+
+
+def test_channel_validation_vk_and_discord():
+    from app.api.channels import _validate_channel, ChannelBody
+
+    # Валидный VK
+    vk_ok = ChannelBody(project_id=1, type="vk", name="VK Группа", config={"owner_id": "-12345"})
+    assert _validate_channel(vk_ok)["owner_id"] == "-12345"
+
+    # Невалидный VK (нет owner_id)
+    with pytest.raises(Exception):
+        _validate_channel(ChannelBody(project_id=1, type="vk", name="VK Группа", config={}))
+
+    # Валидный Discord
+    disc_ok = ChannelBody(project_id=1, type="discord", name="Discord", config={"webhook_url": "https://discord.com/api/webhooks/1/2"})
+    assert "discord.com" in _validate_channel(disc_ok)["webhook_url"]
+
+    # Невалидный Discord (левый URL)
+    with pytest.raises(Exception):
+        _validate_channel(ChannelBody(project_id=1, type="discord", name="Discord", config={"webhook_url": "https://example.com"}))
+
+    # Пустой webhook_url при правке с уже сохранённым URL — ок
+    _validate_channel(
+        ChannelBody(project_id=1, type="discord", name="Discord", config={}),
+        existing={"webhook_url": "enc:v1:legacy"},
+    )
+
+
+def test_channel_secrets_roundtrip_and_public_redaction(monkeypatch):
+    from app import channel_secrets
+    from app.api.channels import _merge_secrets, _public_channel
+    from app.config import Settings
+
+    monkeypatch.setattr(channel_secrets, "get_settings", lambda: Settings(secret_key="unit-test-secret-key-32chars!!"))
+
+    cfg = _merge_secrets(
+        {
+            "url": "https://hooks.example/post",
+            "secret": "hook-secret",
+            "access_token": "vk-token",
+            "webhook_url": "https://discord.com/api/webhooks/1/abc",
+        },
+        None,
+    )
+    assert cfg["secret"].startswith("enc:v1:")
+    assert cfg["access_token"].startswith("enc:v1:")
+    assert cfg["webhook_url"].startswith("enc:v1:")
+    assert "hook-secret" not in cfg["secret"]
+
+    plain = channel_secrets.decrypt_channel_config(cfg)
+    assert plain["secret"] == "hook-secret"
+    assert plain["access_token"] == "vk-token"
+    assert plain["webhook_url"].endswith("/abc")
+
+    # Повторное сохранение с пустыми секретами сохраняет ciphertext
+    kept = _merge_secrets({"url": "https://hooks.example/post", "secret": ""}, cfg)
+    assert kept["secret"] == cfg["secret"]
+
+    public = _public_channel({"id": 1, "config": dict(cfg), "type": "webhook", "name": "W"})
+    assert public["has_secret"] is True
+    assert "secret" not in public["config"]
+    assert "access_token" not in public["config"]
+    assert "webhook_url" not in public["config"]
+    assert public["config"]["url"] == "https://hooks.example/post"
+
+
+@pytest.mark.asyncio
+async def test_check_url_blocks_private(monkeypatch):
+    from app import netguard
+    from app.config import Settings
+
+    monkeypatch.setattr(netguard, "get_settings", lambda: Settings(allow_private_urls=False, secret_key="x" * 32))
+
+    with pytest.raises(ValueError, match="внутренней сети"):
+        await netguard.check_url("http://127.0.0.1/admin")
+
+    with pytest.raises(ValueError, match="внутренней сети"):
+        await netguard.check_url("http://10.0.0.5/")
+
+
+@pytest.mark.asyncio
+async def test_guarded_transport_pins_resolved_ip(monkeypatch):
+    from app import netguard
+    from app.config import Settings
+
+    monkeypatch.setattr(netguard, "get_settings", lambda: Settings(allow_private_urls=False, secret_key="x" * 32))
+
+    async def fake_check(url: str):
+        assert "example.com" in url
+        return url, ["93.184.216.34"]
+
+    seen: dict = {}
+
+    class RecordingTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            seen["host"] = request.url.host
+            seen["header_host"] = request.headers.get("host")
+            seen["sni"] = request.extensions.get("sni_hostname")
+            return httpx.Response(200, text="ok")
+
+    monkeypatch.setattr(netguard, "check_url", fake_check)
+    transport = netguard.GuardedAsyncTransport()
+    transport._inner = RecordingTransport()
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        r = await client.get("https://example.com/path")
+    assert r.status_code == 200
+    assert seen["host"] == "93.184.216.34"
+    assert seen["header_host"] == "example.com"
+    assert seen["sni"] == "example.com"
+
+
+# ---------- MinHash & LSH дедупликация ----------
+def test_minhash_shingle_and_normalization():
+    from app.pipeline.minhash import normalize_text, shingle_text
+
+    norm = normalize_text("Минцифры РФ: объявило о... старте?!")
+    assert norm == "минцифры рф объявило о старте"
+
+    # Символьные 4-граммы
+    s_char = shingle_text("Привет мир", k=4, mode="char")
+    assert len(s_char) > 0
+
+    # Пословные 2-граммы
+    s_word = shingle_text("раз два три четыре", k=2, mode="word")
+    assert len(s_word) == 3
+
+    # Пустой текст и короткий текст
+    assert shingle_text("", k=4) == set()
+    s_short = shingle_text("да", k=4)
+    assert len(s_short) == 1
+
+
+def test_minhash_identical_texts():
+    from app.pipeline.minhash import compute_minhash, minhash_jaccard
+
+    text = "Центробанк повысил ключевую ставку на 100 базисных пунктов до 19% годовых."
+    sig1 = compute_minhash(text)
+    sig2 = compute_minhash(text)
+    assert np.array_equal(sig1, sig2)
+    assert minhash_jaccard(sig1, sig2) == 1.0
+
+
+def test_minhash_syndicated_reprints_high_similarity():
+    from app.pipeline.minhash import compute_minhash, minhash_jaccard
+
+    base = (
+        "МОСКВА, 18 октября. /ТАСС/. Банк России принял решение повысить ключевую ставку "
+        "на 100 базисных пунктов, до 19% годовых. Об этом говорится в пресс-релизе регулятора "
+        "по итогам заседания совета директоров. Текущее инфляционное давление остается высоким."
+    )
+    reprint = (
+        "МОСКВА. Банк России принял решение повысить ключевую ставку "
+        "на 100 базисных пунктов, до 19% годовых. Об этом говорится в пресс-релизе регулятора "
+        "по итогам заседания совета директоров. Текущее инфляционное давление остается высоким."
+    )
+    unrelated = (
+        "В Москве открылась новая станция Большой кольцевой линии метро. "
+        "Мэр города принял участие в торжественной церемонии запуска пассажирского движения."
+    )
+
+    sig_base = compute_minhash(base)
+    sig_reprint = compute_minhash(reprint)
+    sig_unrelated = compute_minhash(unrelated)
+
+    sim_reprint = minhash_jaccard(sig_base, sig_reprint)
+    sim_unrelated = minhash_jaccard(sig_base, sig_unrelated)
+
+    assert sim_reprint >= 0.85
+    assert sim_unrelated < 0.15
+
+
+def test_minhash_lsh_index_candidate_search():
+    from app.pipeline.minhash import MinHashLSHIndex, compute_minhash
+
+    lsh = MinHashLSHIndex(threshold=0.80)
+
+    doc1 = (
+        "Банк России принял решение повысить ключевую ставку на 100 базисных пунктов, "
+        "до 19% годовых. Текущее инфляционное давление остается высоким."
+    )
+    doc2 = (
+        "Банк России принял решение поднять ключевую ставку на 100 базисных пунктов, "
+        "до 19% годовых. Текущее инфляционное давление остается высоким."
+    )
+    doc3 = "Открытие выставки современного искусства прошло вчера в Третьяковской галерее."
+
+    sig1 = compute_minhash(doc1)
+    sig2 = compute_minhash(doc2)
+    sig3 = compute_minhash(doc3)
+
+    lsh.insert(101, sig1, meta={"title": "ЦБ поднял ставку"})
+    assert len(lsh) == 1
+    assert lsh.get_meta(101)["title"] == "ЦБ поднял ставку"
+
+    # doc2 близок к doc1 -> должен найти кандидата 101
+    match_id, sim = lsh.query(sig2)
+    assert match_id == 101
+    assert sim >= 0.80
+
+    # doc3 не имеет ничего общего -> None
+    match_id, sim = lsh.query(sig3)
+    assert match_id is None
+    assert sim == 0.0
+
+
+def test_minhash_empty_and_zero_handling():
+    from app.pipeline.minhash import MinHashLSHIndex, compute_minhash, minhash_jaccard
+
+    sig_empty = compute_minhash("")
+    assert not np.any(sig_empty)
+
+    sig_valid = compute_minhash("Тестовый текст для проверки")
+    assert minhash_jaccard(sig_empty, sig_valid) == 0.0
+    assert minhash_jaccard(sig_empty, sig_empty) == 0.0
+
+    lsh = MinHashLSHIndex()
+    lsh.insert(999, sig_empty)
+    assert len(lsh) == 0  # пустые сигнатуры не должны попадать в индекс
+
+    match_id, sim = lsh.query(sig_empty)
+    assert match_id is None and sim == 0.0
+

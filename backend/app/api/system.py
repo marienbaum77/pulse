@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from .. import db, jobs
 from ..config import get_settings
 from ..events import broker
-from ..providers import classify_model, list_remote_models, load_runtime_overrides, pull_remote_model, refresh_provider, save_runtime_overrides
+from ..providers import list_remote_models, load_runtime_overrides, pull_remote_model, refresh_provider, save_runtime_overrides
 from ..scheduler import next_fire
 from ..security import admin, audit, hash_password, viewer
 from ..textutil import utcnow

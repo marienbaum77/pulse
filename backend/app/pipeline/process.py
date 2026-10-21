@@ -7,10 +7,13 @@ import numpy as np
 from psycopg.types.json import Jsonb
 
 from .. import db, events, jobs
+from ..config import get_settings
 from ..providers import refresh_provider
 from ..textutil import utcnow
 from .ingest import MIN_RSS_TEXT_CHARS
+from . import minhash as minhash_mod
 from . import scoring
+from . import interest as interest_mod
 from .clustering_core import Cluster, OnlineClusterer, unit_vector
 
 log = logging.getLogger("pulse.process")
@@ -116,7 +119,7 @@ async def ensure_embedding_space(project: dict, provider) -> bool:
                 await conn.execute(
                     "UPDATE clusters SET centroid = NULL, published_centroid = NULL, score = NULL, score_breakdown = NULL, "
                     "state = CASE WHEN state = 'published' THEN 'published' ELSE 'closed' END WHERE project_id = %s", (pid,))
-                await conn.execute("UPDATE items SET status = 'new', embedding = NULL, title_embedding = NULL, topic_score = NULL, cluster_id = NULL, dup_of = NULL WHERE project_id = %s", (pid,))
+                await conn.execute("UPDATE items SET status = 'new', embedding = NULL, title_embedding = NULL, topic_score = NULL, cluster_id = NULL, dup_of = NULL, minhash = NULL WHERE project_id = %s", (pid,))
                 await conn.execute("UPDATE projects SET topic_embedding = NULL WHERE id = %s", (pid,))
     from psycopg.types.json import Jsonb as _J
     await db.execute(
@@ -124,6 +127,107 @@ async def ensure_embedding_space(project: dict, provider) -> bool:
         (key, _J({"sig": sig})),
     )
     return changed
+
+
+async def deduplicate_new(project: dict) -> dict[str, int]:
+    """Stage 1: Лексическая дедупликация новых материалов через MinHash/LSH.
+
+    Для материалов со статусом 'new' ищет почти-дубликаты (перепечатки) среди материалов
+    в текущем временном окне проекта.
+    Если сходство Жаккара >= threshold (по умолчанию 0.82):
+      - материал помечается как status='duplicate' с dup_of=parent_id;
+      - наследует embedding, title_embedding, topic_score и cluster_id родителя (если родитель уже кластеризован);
+      - НЕ отправляется на вычисление нейросетевых эмбеддингов в embed_new, экономя время и ресурсы GPU;
+      - источник материала учитывается в source_count и охвате (coverage) сюжета.
+    """
+    settings = get_settings()
+    if not settings.minhash_dedup_enabled:
+        return {"checked": 0, "duplicates": 0}
+
+    pid = project["id"]
+    window = timedelta(hours=project["window_hours"])
+    threshold = getattr(settings, "minhash_threshold", minhash_mod.DEFAULT_THRESHOLD)
+
+    new_rows = await db.fetchall(
+        "SELECT id, title, text, minhash FROM items WHERE project_id = %s AND status = 'new' ORDER BY published_at, id",
+        (pid,),
+    )
+    if not new_rows:
+        return {"checked": 0, "duplicates": 0}
+
+    since = utcnow() - window
+    existing_rows = await db.fetchall(
+        "SELECT id, title, text, minhash, cluster_id, dup_of, embedding, title_embedding, topic_score "
+        "FROM items WHERE project_id = %s AND status IN ('embedded', 'clustered') AND published_at >= %s "
+        "ORDER BY published_at, id",
+        (pid, since),
+    )
+
+    index = minhash_mod.MinHashLSHIndex(threshold=threshold)
+    backfill_minhashes: list[tuple[bytes, int]] = []
+    for r in existing_rows:
+        raw_mh = r["minhash"]
+        if raw_mh:
+            sig = np.frombuffer(raw_mh, dtype=np.uint32)
+        else:
+            sig = minhash_mod.compute_minhash(f"{r['title']}. {r['text'][:1200]}")
+            backfill_minhashes.append((sig.tobytes(), r["id"]))
+        index.insert(r["id"], sig, meta=dict(r))
+
+    if backfill_minhashes:
+        async with db.pool.connection() as conn:
+            for mh_bytes, item_id in backfill_minhashes:
+                await conn.execute("UPDATE items SET minhash = %s WHERE id = %s", (mh_bytes, item_id))
+
+    duplicates_count = 0
+    touched_clusters: set[int] = set()
+
+    async with db.pool.connection() as conn:
+        for r in new_rows:
+            raw_mh = r["minhash"]
+            if raw_mh:
+                sig = np.frombuffer(raw_mh, dtype=np.uint32)
+            else:
+                sig = minhash_mod.compute_minhash(f"{r['title']}. {r['text'][:1200]}")
+
+            sig_bytes = sig.tobytes()
+            match_id, sim = index.query(sig)
+
+            if match_id is not None:
+                parent_meta = index.get_meta(match_id) or {}
+                root_id = parent_meta.get("dup_of") or match_id
+                parent_cluster_id = parent_meta.get("cluster_id")
+                parent_emb = parent_meta.get("embedding")
+                parent_title_emb = parent_meta.get("title_embedding")
+                parent_topic_score = parent_meta.get("topic_score")
+
+                await conn.execute(
+                    "UPDATE items SET status = 'duplicate', dup_of = %s, cluster_id = %s, "
+                    "embedding = %s, title_embedding = %s, topic_score = %s, minhash = %s "
+                    "WHERE id = %s",
+                    (root_id, parent_cluster_id, parent_emb, parent_title_emb, parent_topic_score, sig_bytes, r["id"]),
+                )
+                duplicates_count += 1
+                if parent_cluster_id is not None:
+                    touched_clusters.add(parent_cluster_id)
+            else:
+                await conn.execute("UPDATE items SET minhash = %s WHERE id = %s", (sig_bytes, r["id"]))
+                item_meta = {
+                    "id": r["id"],
+                    "cluster_id": None,
+                    "dup_of": None,
+                    "embedding": None,
+                    "title_embedding": None,
+                    "topic_score": None,
+                }
+                index.insert(r["id"], sig, meta=item_meta)
+
+    if touched_clusters:
+        async with db.pool.connection() as conn:
+            await conn.execute(AGG_SQL, (list(touched_clusters),))
+
+    log.info("project %s: MinHash checked %d new items, detected %d duplicates", pid, len(new_rows), duplicates_count)
+    return {"checked": len(new_rows), "duplicates": duplicates_count}
 
 
 async def embed_new(project: dict, provider) -> int:
@@ -212,7 +316,7 @@ async def backfill_topic_scores_job(payload: dict) -> None:
         return  # без настоящих эмбеддингов тема не измеряется — догонять нечего
     with_scores = bool(project_topic_aspects(project))
     # Отдельный ключ, а не блокировка проекта: бэкфилл не мешает process_project, но две порции не дублируют работу.
-    async with db.advisory_lock(3, project_id) as got:
+    async with db.advisory_lock(db.AdvisoryLock.PROJECT_TOPIC_BACKFILL, project_id) as got:
         if not got:
             return  # уже работает другая порция; она сама поставит продолжение
         done = await backfill_topic_scores(project_id, provider)
@@ -229,7 +333,7 @@ FROM (SELECT i.cluster_id, count(*) AS n,
              count(DISTINCT COALESCE(NULLIF(i.publisher_name, ''), s.name, 'Источник')) AS sc,
              min(i.published_at) AS f, max(i.published_at) AS l
       FROM items i LEFT JOIN sources s ON s.id = i.source_id
-      WHERE i.cluster_id = ANY(%s) AND i.status = 'clustered' GROUP BY i.cluster_id) s
+      WHERE i.cluster_id = ANY(%s) AND i.status IN ('clustered', 'duplicate') GROUP BY i.cluster_id) s
 WHERE c.id = s.cluster_id
 """
 TITLE_SQL = """
@@ -294,8 +398,12 @@ async def cluster_new(project: dict) -> dict:
                     await conn.execute("UPDATE clusters SET centroid = %s WHERE id = %s", (c.centroid, c.id))
             for item_id, c in assigned:
                 await conn.execute("UPDATE items SET status = 'clustered', cluster_id = %s WHERE id = %s", (c.id, item_id))
+                await conn.execute("UPDATE items SET cluster_id = %s WHERE dup_of = %s AND cluster_id IS NULL", (c.id, item_id))
             for item_id, dup_of in dups:
-                await conn.execute("UPDATE items SET status = 'duplicate', dup_of = %s WHERE id = %s", (dup_of, item_id))
+                await conn.execute(
+                    "UPDATE items SET status = 'duplicate', dup_of = %s, cluster_id = (SELECT cluster_id FROM items WHERE id = %s) WHERE id = %s",
+                    (dup_of, dup_of, item_id),
+                )
             ids = [c.id for c in touched]
             if ids:
                 await conn.execute(AGG_SQL, (ids,))
@@ -311,8 +419,8 @@ SELECT c.id, c.centroid,
    WHERE i.cluster_id = c.id AND i.status = 'clustered' AND i.topic_score IS NOT NULL) AS topic_score,
   c.source_count, c.last_seen,
   COALESCE((SELECT avg(a) FROM (SELECT DISTINCT s.id, s.authority AS a FROM items i JOIN sources s ON s.id = i.source_id
-            WHERE i.cluster_id = c.id AND i.status = 'clustered') t), 0.5) AS authority,
-  (SELECT count(*) FROM items i WHERE i.cluster_id = c.id AND i.status = 'clustered'
+            WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate')) t), 0.5) AS authority,
+  (SELECT count(*) FROM items i WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate')
      AND i.published_at >= now() - interval '6 hours') AS recent
 FROM clusters c
 WHERE c.project_id = %s AND c.state IN ('open', 'published') AND c.centroid IS NOT NULL
@@ -398,17 +506,24 @@ async def process_project(project_id: int) -> dict:
     project = await get_project(project_id)
     if not project or not project["active"]:
         return {}
-    async with db.advisory_lock(1, project_id) as got:
+    async with db.advisory_lock(db.AdvisoryLock.PROJECT_PIPELINE, project_id) as got:
         if not got:
             raise jobs.Retry(5)
         provider = await refresh_provider()
         if await ensure_embedding_space(project, provider):
             project = await get_project(project_id)
         await ensure_topic_embedding(project, provider)
+        dedup_stats = await deduplicate_new(project)
         embedded = await embed_new(project, provider)
         stats = await cluster_new(project)
+        stats["lexical_duplicates"] = dedup_stats.get("duplicates", 0)
         stats["embedded"] = embedded
         stats["scored"] = await refresh_clusters(project)
+        # Оценка интересности сюжетов языковой моделью (после скоринга)
+        if getattr(provider, "supports_chat", False):
+            candidates = await select_clusters(project, limit=20)
+            if candidates:
+                await interest_mod.rank_by_interest(project, provider, candidates, limit=len(candidates))
     log.info("project %s processed: %s", project_id, stats)
     await events.notify("pipeline", project_id=project_id, stage="processed", **stats)
     if provider.name != "stub" and await needs_topic_backfill(project_id, bool(project_topic_aspects(project))):

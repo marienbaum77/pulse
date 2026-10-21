@@ -15,7 +15,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from .config import get_settings
-from .netguard import check_url
+from .netguard import guarded_client
 
 log = logging.getLogger("pulse.images")
 
@@ -168,9 +168,8 @@ async def download_image(url: str) -> tuple[bytes, str]:
 async def _download_image_once(url: str) -> tuple[bytes, str]:
     headers = {"User-Agent": "PulseBot/1.0 (+self-hosted)", "Accept": "image/*"}
     current = url
-    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0), follow_redirects=False, headers=headers) as client:
+    async with guarded_client(timeout=httpx.Timeout(15.0, connect=5.0), follow_redirects=False, headers=headers) as client:
         for _ in range(4):
-            await check_url(current)
             async with client.stream("GET", current) as r:
                 if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                     current = str(httpx.URL(current).join(r.headers["location"]))

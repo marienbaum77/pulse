@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
+# For reproducible builds use requirements.lock instead of requirements.txt
 COPY backend/requirements.txt .
 RUN pip install -r requirements.txt
 COPY backend/app ./app
@@ -13,4 +14,7 @@ RUN useradd --create-home --uid 10001 pulse \
 USER pulse
 EXPOSE 8000
 # API и воркер — один образ, разные команды (см. docker-compose.yml)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# SECURITY: --forwarded-allow-ips определяет, каким IP доверять заголовки Forwarded / X-Forwarded-*.
+# Значение «*» (по умолчанию) доверяет ВСЕМ — допустимо только за выделенным reverse-proxy.
+# В продакшене задайте FORWARDED_ALLOW_IPS через переменную окружения (например, «172.18.0.0/16»).
+CMD uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-*}"

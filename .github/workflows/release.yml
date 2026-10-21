@@ -1,10 +1,17 @@
 name: Release
 
-# Сборка установщика и публикация в GitHub Releases по тегу вида v1.0.0.
+# Сборка установщика и публикация в GitHub Releases по тегу вида v1.0.0 или вручную через Actions.
 # Использование: git tag v1.0.0 && git push origin v1.0.0
+# Или в GitHub UI: Actions -> Release -> Run workflow
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Имя тега / версии (например, v1.0.2). Если пусто, берётся версия из desktop/package.json"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -21,11 +28,16 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      # Версия приложения берётся из тега, чтобы имя файла совпадало с релизом.
+      # Версия приложения берётся из тега или инпута, чтобы имя файла совпадало с релизом.
       - name: Sync version from tag
         working-directory: desktop
         shell: pwsh
-        run: npm pkg set version=$($env:GITHUB_REF_NAME -replace '^v','')
+        run: |
+          $raw = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } elseif ('${{ inputs.tag_name }}' -ne '') { '${{ inputs.tag_name }}' } else { '' }
+          if ($raw) {
+            $ver = $raw -replace '^v',''
+            npm pkg set version=$ver
+          }
 
       - name: Install dependencies
         working-directory: desktop
@@ -40,3 +52,4 @@ jobs:
         with:
           files: desktop/release/Pulse-Setup-*.exe
           generate_release_notes: true
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || (inputs.tag_name != '' && inputs.tag_name || 'latest') }}

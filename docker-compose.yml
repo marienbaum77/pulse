@@ -57,6 +57,12 @@ services:
   worker:
     <<: *backend
     command: ["python", "-m", "app.worker"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     environment:
       <<: *backend-env
       # 3 = отдельный воркер для сбора RSS (ingest_source/enrich_articles) + отдельный для generate + общий.

@@ -1,3 +1,5 @@
+import ipaddress
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
@@ -13,9 +15,32 @@ class LoginBody(BaseModel):
     password: str
 
 
+def _parse_trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Парсинг TRUSTED_PROXIES из настроек в список сетей (кешируется на уровне модуля)."""
+    nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for entry in get_settings().trusted_proxies.split(","):
+        entry = entry.strip()
+        if entry:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+    return nets
+
+
+def _is_trusted_proxy(host: str) -> bool:
+    """Проверяет, что прямой клиент входит в список доверенных прокси."""
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(addr in net for net in _parse_trusted_networks())
+
+
 def _ip(request: Request) -> str:
+    # Доверяем X-Forwarded-For только если прямой клиент — доверенный прокси
+    direct = request.client.host if request.client else "?"
     fwd = request.headers.get("x-forwarded-for")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
+    if fwd and direct != "?" and _is_trusted_proxy(direct):
+        return fwd.split(",")[0].strip()
+    return direct
 
 
 @router.post("/login")

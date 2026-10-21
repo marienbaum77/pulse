@@ -14,7 +14,7 @@ import trafilatura
 
 from .. import db, events, jobs
 from ..images import normalize_image_url, feed_entry_image
-from ..netguard import check_url
+from ..netguard import guarded_client
 from ..providers import refresh_provider
 from ..textutil import item_hash, strip_html, utcnow
 from .clustering_core import unit_vector
@@ -63,10 +63,9 @@ def _strip_read_more_teaser(text: str) -> str:
 
 
 async def _get(url: str, headers: dict) -> httpx.Response:
-    """GET с ручной обработкой редиректов: каждый адрес проверяется на SSRF."""
-    async with httpx.AsyncClient(timeout=20, follow_redirects=False, headers=headers) as client:
+    """GET с ручной обработкой редиректов: каждый адрес проверяется на SSRF (pin IP)."""
+    async with guarded_client(timeout=20, follow_redirects=False, headers=headers) as client:
         for _ in range(4):
-            await check_url(url)
             r = await client.get(url)
             if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                 url = str(httpx.URL(url).join(r.headers["location"]))
@@ -131,9 +130,8 @@ async def fetch_article(url: str) -> tuple[str, str | None]:
     headers = {"User-Agent": "PulseBot/1.0 (+self-hosted)", "Accept": "text/html,application/xhtml+xml"}
     current_url = url
     timeout = httpx.Timeout(12.0, connect=5.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, headers=headers) as client:
+    async with guarded_client(timeout=timeout, follow_redirects=False, headers=headers) as client:
         for _ in range(4):
-            await check_url(current_url)
             async with client.stream("GET", current_url) as response:
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("location")
@@ -203,7 +201,7 @@ async def enrich_articles(payload: dict) -> None:
     project_id = int(payload["project_id"])
     include_clustered = bool(payload.get("include_clustered"))
     if include_clustered:
-        async with db.advisory_lock(1, project_id) as got:
+        async with db.advisory_lock(db.AdvisoryLock.PROJECT_PIPELINE, project_id) as got:
             if not got:
                 raise jobs.Retry(5)
             await _run_article_enrichment(source_id, project_id, include_clustered)
@@ -314,7 +312,7 @@ async def insert_items(project_id: int, source_id: int | None, items: list[dict]
             "count(DISTINCT COALESCE(NULLIF(i.publisher_name, ''), s.name, 'Источник')) AS sc, "
             "min(i.published_at) AS f, max(i.published_at) AS l FROM items i "
             "LEFT JOIN sources s ON s.id = i.source_id "
-            "WHERE i.cluster_id = ANY(%s) AND i.status = 'clustered' GROUP BY i.cluster_id) a "
+            "WHERE i.cluster_id = ANY(%s) AND i.status IN ('clustered', 'duplicate') GROUP BY i.cluster_id) a "
             "WHERE c.id = a.cluster_id",
             (list(updated_cluster_ids),),
         )

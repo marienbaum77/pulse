@@ -1,5 +1,5 @@
 import { SCORE_HINTS, SCORE_LABELS } from "../lib/labels";
-import { fmtNum, plural, shortDay } from "../lib/format";
+import { ago, dateTime, fmtNum, plural, shortDay } from "../lib/format";
 import type { ScorePart } from "../lib/types";
 
 /** Столбики по дням: вид «сколько материалов вышло». Сегодняшний день выделен маркером. */
@@ -34,17 +34,36 @@ export function DailyBars({ data }: { data: { date: string; items: number }[] })
   );
 }
 
-/** Когда приходили материалы сюжета внутри окна кластеризации: одна точка — один материал. */
+/** Когда приходили материалы сюжета внутри окна кластеризации: одна точка — один материал.
+ * Левее — старые материалы (начало окна), правее — свежие (сейчас). */
 export function ArrivalStrip({ arrivals, windowHours, width = 150 }: { arrivals: string[] | null; windowHours: number; width?: number }) {
   const now = Date.now(), span = windowHours * 3600_000, h = 18;
-  const pts = (arrivals ?? []).map((a) => (new Date(a).getTime() - (now - span)) / span).filter((p) => p >= -0.02);
+  const list = arrivals ?? [];
+  const pts = list.map((a) => ({
+    time: a,
+    pos: (new Date(a).getTime() - (now - span)) / span,
+  })).filter((item) => item.pos >= -0.02);
+
+  const tooltip = `Хронология публикаций за ${windowHours} ч:\nЛевее — ${windowHours} ч назад, правее — сейчас.\nВсего материалов: ${pts.length}`;
+
   return (
-    <svg width={width} height={h} viewBox={`0 0 ${width} ${h}`} role="img" aria-label={`${pts.length} материалов за ${windowHours} ч`}>
-      <line x1="2" x2={width - 2} y1={h / 2} y2={h / 2} stroke="var(--rule)" />
-      {pts.map((p, i) => (
-        <circle key={i} cx={2 + Math.min(Math.max(p, 0), 1) * (width - 4)} cy={h / 2} r="2.6" fill="var(--brand)" opacity={0.35 + 0.65 * Math.min(Math.max(p, 0), 1)} />
-      ))}
-    </svg>
+    <div className="inline-flex flex-col items-end" title={tooltip}>
+      <svg width={width} height={h} viewBox={`0 0 ${width} ${h}`} role="img" aria-label={tooltip}>
+        <line x1="2" x2={width - 2} y1={h / 2} y2={h / 2} stroke="var(--rule)" />
+        {pts.map((pt, i) => (
+          <circle
+            key={i}
+            cx={2 + Math.min(Math.max(pt.pos, 0), 1) * (width - 4)}
+            cy={h / 2}
+            r="2.8"
+            fill="var(--brand)"
+            opacity={0.35 + 0.65 * Math.min(Math.max(pt.pos, 0), 1)}
+          >
+            <title>{dateTime(pt.time)} ({ago(pt.time)})</title>
+          </circle>
+        ))}
+      </svg>
+    </div>
   );
 }
 

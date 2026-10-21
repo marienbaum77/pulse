@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql://pulse:pulse@localhost:5432/pulse"
+    db_pool_min: int = 1
+    db_pool_max: int = 12
     secret_key: str = "change-me-in-production"
     admin_email: str = "admin@example.com"
     admin_password: str = "admin12345"
@@ -22,13 +24,19 @@ class Settings(BaseSettings):
     # Эмбеддинги можно брать с другого сервера, чем текст (например, локальный Ollama + облачный chat API).
     embed_base_url: str = "http://ollama:11434/v1"
     embed_api_key: str = ""
+    embed_batch_size: int = 32
     llm_timeout: float = 180.0
+
+    # Двухэтапная дедупликация (Stage 1: лексический MinHash/LSH перед нейросетевыми эмбеддингами)
+    minhash_dedup_enabled: bool = True
+    minhash_threshold: float = 0.82
 
     image_cache_dir: str = ""  # в docker-compose это общий том для api и worker
     image_cache_max_mb: int = 500
     image_cache_max_age_days: int = 30
 
     allow_private_urls: bool = False
+    trusted_proxies: str = "127.0.0.1,::1,172.16.0.0/12,10.0.0.0/8"  # IP/CIDR клиентов, которым доверяем X-Forwarded-For
     telegram_bot_token: str = ""
 
     worker_concurrency: int = 2

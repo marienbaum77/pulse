@@ -10,8 +10,32 @@ import { NoProject } from "../components/NoProject";
 import { Badge, Dialog, ErrorNote, Field, PageHeader, Spinner, Toggle } from "../components/ui";
 
 type ChType = Channel["type"];
-interface ChForm { id?: number; type: ChType; name: string; chat_id: string; token_env: string; url: string; secret: string; enabled: boolean; hasSecret?: boolean }
-const BLANK_CH: ChForm = { type: "telegram", name: "", chat_id: "", token_env: "", url: "", secret: "", enabled: true };
+interface ChForm {
+  id?: number;
+  type: ChType;
+  name: string;
+  chat_id: string;
+  token_env: string;
+  url: string;
+  secret: string;
+  owner_id: string;
+  access_token: string;
+  webhook_url: string;
+  enabled: boolean;
+  hasSecret?: boolean;
+}
+const BLANK_CH: ChForm = {
+  type: "telegram",
+  name: "",
+  chat_id: "",
+  token_env: "",
+  url: "",
+  secret: "",
+  owner_id: "",
+  access_token: "",
+  webhook_url: "",
+  enabled: true,
+};
 
 interface ScForm { id?: number; name: string; cron: string; tz: string; kind: "post" | "digest"; top_n: number; enabled: boolean }
 const BLANK_SC: ScForm = { name: "", cron: "0 9 * * *", tz: "Europe/Moscow", kind: "digest", top_n: 5, enabled: true };
@@ -37,7 +61,16 @@ export default function Channels() {
 
   const saveCh = useMutation({
     mutationFn: (f: ChForm) => {
-      const config: Record<string, string> = f.type === "telegram" ? { chat_id: f.chat_id, ...(f.token_env ? { token_env: f.token_env } : {}) } : f.type === "webhook" ? { url: f.url, ...(f.secret ? { secret: f.secret } : {}) } : {};
+      let config: Record<string, string> = {};
+      if (f.type === "telegram") {
+        config = { chat_id: f.chat_id, ...(f.token_env ? { token_env: f.token_env } : {}) };
+      } else if (f.type === "webhook") {
+        config = { url: f.url, ...(f.secret ? { secret: f.secret } : {}) };
+      } else if (f.type === "vk") {
+        config = { owner_id: f.owner_id, ...(f.token_env ? { token_env: f.token_env } : {}), ...(f.access_token ? { access_token: f.access_token } : {}) };
+      } else if (f.type === "discord") {
+        config = { ...(f.webhook_url ? { webhook_url: f.webhook_url } : {}) };
+      }
       const body = { project_id: pid, type: f.type, name: f.name, config, enabled: f.enabled };
       return f.id ? api(`/channels/${f.id}`, { method: "PUT", body }) : api("/channels", { method: "POST", body });
     },
@@ -81,7 +114,13 @@ export default function Channels() {
   if (!project) return <NoProject />;
   const patchCh = (p: Partial<ChForm>) => setCh((f) => (f ? { ...f, ...p } : f));
   const patchSc = (p: Partial<ScForm>) => setSc((f) => (f ? { ...f, ...p } : f));
-  const chValid = !!ch && !!ch.name && (ch.type !== "telegram" || !!ch.chat_id) && (ch.type !== "webhook" || !!ch.url);
+  const chValid =
+    !!ch &&
+    !!ch.name &&
+    (ch.type !== "telegram" || !!ch.chat_id) &&
+    (ch.type !== "webhook" || !!ch.url) &&
+    (ch.type !== "vk" || !!ch.owner_id) &&
+    (ch.type !== "discord" || !!ch.webhook_url || (!!ch.id && !!ch.hasSecret));
 
   return (
     <div className="fadein">
@@ -92,7 +131,7 @@ export default function Channels() {
           <h2 className="text-xl font-semibold">Каналы публикации</h2>
           {can("editor") && <button className="btn btn-primary btn-sm" onClick={() => setCh(BLANK_CH)}><Plus size={15} />Добавить канал</button>}
         </div>
-        <p className="hint mb-2 max-w-[70ch]">«Проверить доступ» ничего не публикует: для Telegram запрашивается только информация о боте и его правах в канале.</p>
+        <p className="hint mb-2 max-w-[70ch]">«Проверить доступ» ничего не публикует: проверяется корректность токенов и прав бота/вебхука.</p>
         {channels.isLoading && <Spinner />}
         {channels.error && <ErrorNote error={channels.error} />}
         {channels.data?.length === 0 && <p className="text-muted py-5">Каналов нет — утвердить черновик будет некуда. Начните с «Консоли»: она просто пишет пост в журнал воркера.</p>}
@@ -105,13 +144,36 @@ export default function Channels() {
                   <span>{CHANNEL_TYPES[c.type]}</span>
                   {c.type === "telegram" && <span className="num">{c.config.chat_id}</span>}
                   {c.type === "webhook" && <span className="truncate max-w-[320px]">{c.config.url}</span>}
+                  {c.type === "vk" && <span className="num">ID: {c.config.owner_id}</span>}
+                  {c.type === "discord" && <span className="truncate max-w-[320px]">Discord Webhook</span>}
                   <Badge tone={c.enabled ? "ok" : "muted"}>{c.enabled ? "Включён" : "Выключен"}</Badge>
                 </div>
               </div>
               {can("editor") && (
                 <div className="flex gap-1.5">
                   <button className="btn btn-sm" onClick={() => testCh.mutate(c.id)} disabled={testCh.isPending}><Send size={14} />Проверить доступ</button>
-                  <button className="btn btn-sm btn-ghost" aria-label="Изменить" onClick={() => setCh({ id: c.id, type: c.type, name: c.name, chat_id: c.config.chat_id ?? "", token_env: c.config.token_env ?? "", url: c.config.url ?? "", secret: "", enabled: c.enabled, hasSecret: c.has_secret })}><Pencil size={15} /></button>
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    aria-label="Изменить"
+                    onClick={() =>
+                      setCh({
+                        id: c.id,
+                        type: c.type,
+                        name: c.name,
+                        chat_id: c.config.chat_id ?? "",
+                        token_env: c.config.token_env ?? "",
+                        url: c.config.url ?? "",
+                        secret: "",
+                        owner_id: c.config.owner_id ?? "",
+                        access_token: "",
+                        webhook_url: "",
+                        enabled: c.enabled,
+                        hasSecret: c.has_secret,
+                      })
+                    }
+                  >
+                    <Pencil size={15} />
+                  </button>
                   <button className="btn btn-sm btn-ghost btn-danger" aria-label="Удалить" onClick={() => confirm(`Удалить канал «${c.name}»?`) && delCh.mutate(c.id)}><Trash2 size={15} /></button>
                 </div>
               )}
@@ -182,6 +244,31 @@ export default function Channels() {
                   <input className="field" type="password" autoComplete="off" value={ch.secret} onChange={(e) => patchCh({ secret: e.target.value })} />
                 </Field>
               </>
+            )}
+            {ch.type === "vk" && (
+              <>
+                <Field label="ID сообщества (owner_id)" hint="Числовой ID группы ВКонтакте. Для сообществ указывается со знаком минус (например, -123456789).">
+                  <input className="field num" value={ch.owner_id} onChange={(e) => patchCh({ owner_id: e.target.value })} placeholder="-123456789" />
+                </Field>
+                <Field label="Токен доступа сообщества" hint={ch.hasSecret ? "Токен задан. Оставьте пустым, чтобы не менять. Нужны права: wall, photos." : "Токен сообщества с правами wall и photos."}>
+                  <input className="field" type="password" autoComplete="off" value={ch.access_token} onChange={(e) => patchCh({ access_token: e.target.value })} placeholder="vk1.a..." />
+                </Field>
+                <Field label="Или переменная окружения с токеном" hint="Необязательно. Например, VK_ACCESS_TOKEN.">
+                  <input className="field" value={ch.token_env} onChange={(e) => patchCh({ token_env: e.target.value.toUpperCase() })} placeholder="VK_ACCESS_TOKEN" />
+                </Field>
+              </>
+            )}
+            {ch.type === "discord" && (
+              <Field
+                label="Discord Webhook URL"
+                hint={
+                  ch.hasSecret
+                    ? "URL задан. Оставьте пустым, чтобы не менять. Создаётся в Discord: Настройки канала → Интеграция → Вебхуки."
+                    : "Создайте вебхук в настройках канала Discord (Настройки канала → Интеграция → Вебхуки) и вставьте ссылку сюда."
+                }
+              >
+                <input className="field" type="password" autoComplete="off" value={ch.webhook_url} onChange={(e) => patchCh({ webhook_url: e.target.value })} placeholder="https://discord.com/api/webhooks/..." />
+              </Field>
             )}
             {ch.type === "console" && <p className="hint">Пост будет записан в журнал воркера. Удобно, чтобы проверить весь путь до настройки Telegram.</p>}
             <Toggle checked={ch.enabled} onChange={(v) => patchCh({ enabled: v })} label="Канал включён" />

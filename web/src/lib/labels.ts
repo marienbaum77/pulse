@@ -38,4 +38,10 @@ export const PUB_STATUS: Record<PubStatus, { label: string; tone: Tone }> = {
   cancelled: { label: "Отменено", tone: "muted" },
 };
 export type Tone = "ok" | "warn" | "bad" | "info" | "muted";
-export const CHANNEL_TYPES = { telegram: "Telegram", webhook: "Webhook", console: "Консоль (журнал)" } as const;
+export const CHANNEL_TYPES = {
+  telegram: "Telegram",
+  vk: "ВКонтакте",
+  discord: "Discord",
+  webhook: "Webhook",
+  console: "Консоль (журнал)",
+} as const;

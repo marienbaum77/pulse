@@ -17,10 +17,11 @@ from dataclasses import dataclass
 import httpx
 
 from . import db, events
+from .channel_secrets import decrypt_channel_config
 from .config import get_settings
 from .images import download_image
-from .netguard import check_url
-from .textutil import strip_citations, strip_source_footer, truncate
+from .netguard import guarded_client
+from .textutil import strip_citations, strip_html, strip_source_footer, truncate
 
 log = logging.getLogger("pulse.publisher")
 MAX_ATTEMPTS = 6
@@ -64,6 +65,25 @@ def render_telegram_html(title: str, body: str, citations: list[dict], limit: in
     return head + esc(text) + footer
 
 
+def render_telegram_caption(title: str, body: str, citations: list[dict], limit: int = CAPTION_LIMIT) -> str:
+    """Форматирует HTML-подпись для sendPhoto так, чтобы видимый текст укладывался в limit символов после парсинга HTML."""
+    esc = html.escape
+    clean_title = strip_citations(title, {c["n"] for c in citations})
+    head = f"<b>{esc(clean_title)}</b>\n\n" if clean_title else ""
+    footer = sources_footer(citations)
+    visible_head = len(clean_title) + (2 if clean_title else 0)
+    visible_footer = len(strip_html(footer))
+    room = max(limit - visible_head - visible_footer, 100)
+    text = strip_citations(strip_source_footer(body), {c["n"] for c in citations})
+    while len(text) > room and len(text) > 50:
+        text = truncate(text, len(text) - max(20, len(text) // 10))
+    result = head + esc(text) + footer
+    while len(strip_html(result)) > limit and len(text) > 50:
+        text = truncate(text, len(text) - 15)
+        result = head + esc(text) + footer
+    return result
+
+
 def classify_telegram(status: int, data: dict) -> SendResult:
     if status == 200 and data.get("ok"):
         return SendResult("sent", external_id=str((data.get("result") or {}).get("message_id", "")))
@@ -94,7 +114,7 @@ def classify_image_exception(exc: Exception) -> SendResult:
     )
 
 
-async def send_telegram(channel: dict, draft: dict, pub: dict) -> SendResult:
+async def send_telegram(channel: dict, draft: dict, pub: dict, *, client: httpx.AsyncClient | None = None) -> SendResult:
     cfg = channel["config"]
     token = os.environ.get(cfg.get("token_env") or "TELEGRAM_BOT_TOKEN") or get_settings().telegram_bot_token
     if not token or not cfg.get("chat_id"):
@@ -103,15 +123,21 @@ async def send_telegram(channel: dict, draft: dict, pub: dict) -> SendResult:
     text = render_telegram_html(draft["title"], draft["body"], draft["citations"])
     message = {"chat_id": cfg["chat_id"], "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     image_url = draft.get("image_url")
+    # Если клиент передан извне — переиспользуем; иначе создаём локальный.
+    owns_client = client is None
+    if owns_client:
+        client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-            if image_url:
-                res = await _send_with_image(client, base, token, cfg["chat_id"], text, message, image_url, draft)
-                if res:
-                    return res
-            r = await client.post(f"{base}/bot{token}/sendMessage", json=message)
+        if image_url:
+            res = await _send_with_image(client, base, token, cfg["chat_id"], text, message, image_url, draft)
+            if res:
+                return res
+        r = await client.post(f"{base}/bot{token}/sendMessage", json=message)
     except Exception as e:
         return classify_exception(e)
+    finally:
+        if owns_client:
+            await client.aclose()
     return classify_telegram(r.status_code, _json(r))
 
 
@@ -124,21 +150,26 @@ def _json(r: httpx.Response) -> dict:
 
 async def _send_with_image(client: httpx.AsyncClient, base: str, token: str, chat_id: str, text: str, message: dict, image_url: str, draft: dict) -> SendResult | None:
     """Короткий пост — фото с подписью; длинный — текст с превью картинки над ним.
-    Telegram ограничивает подпись к фото 1024 символами, но предпросмотр ссылки позволяет
-    сохранить длинный текст и картинку в одном сообщении. Возвращает None, если безопасно
-    отправить текст без картинки."""
-    if len(text) > CAPTION_LIMIT:
-        preview_url = next(
-            (
-                citation["url"]
-                for citation in draft.get("citations", [])
-                if citation.get("image_url") == image_url and citation.get("url")
-            ),
-            image_url,
-        )
+    Telegram ограничивает подпись к фото 1024 символами после парсинга HTML-тегов,
+    но предпросмотр ссылки позволяет сохранить длинный текст и картинку в одном сообщении.
+    Возвращает None, если безопасно отправить текст без картинки."""
+    visible_len = len(strip_html(text))
+    caption = text
+    if visible_len > CAPTION_LIMIT:
+        # Если превышение небольшое (до 1200 видимых символов), аккуратно укладываем текст в 1024 символа,
+        # чтобы сохранить публикацию полноценным фото вместо ссылки с превью
+        if visible_len <= 1200:
+            fitted = render_telegram_caption(draft["title"], draft["body"], draft["citations"], limit=CAPTION_LIMIT)
+            if len(strip_html(fitted)) <= CAPTION_LIMIT:
+                caption = fitted
+                visible_len = len(strip_html(caption))
+
+    if visible_len > CAPTION_LIMIT:
+        # Используем прямой URL изображения, а не URL статьи-источника:
+        # Telegram ненадёжно извлекает og:image при скрейпинге страниц.
         message.pop("disable_web_page_preview", None)
         message["link_preview_options"] = {
-            "url": preview_url,
+            "url": image_url,
             "show_above_text": True,
             "prefer_large_media": True,
         }
@@ -159,7 +190,7 @@ async def _send_with_image(client: httpx.AsyncClient, base: str, token: str, cha
         return result
     r = await client.post(
         f"{base}/bot{token}/sendPhoto",
-        data={"chat_id": chat_id, "caption": text, "parse_mode": "HTML"},
+        data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
         files={"photo": ("image", data, ctype)},
     )
     res = classify_telegram(r.status_code, _json(r))
@@ -179,8 +210,7 @@ async def send_webhook(channel: dict, draft: dict, pub: dict) -> SendResult:
     if cfg.get("secret"):
         headers["X-Pulse-Signature"] = "sha256=" + hmac.new(cfg["secret"].encode(), body, hashlib.sha256).hexdigest()
     try:
-        await check_url(cfg["url"])
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with guarded_client(timeout=15.0) as client:
             r = await client.post(cfg["url"], content=body, headers=headers)
     except ValueError as e:
         return SendResult("failed", error=str(e))
@@ -193,12 +223,174 @@ async def send_webhook(channel: dict, draft: dict, pub: dict) -> SendResult:
     return SendResult("failed", error=f"HTTP {r.status_code}")
 
 
+def render_vk_text(title: str, body: str, citations: list[dict]) -> str:
+    cleaned = strip_citations(strip_source_footer(body), {c["n"] for c in citations}).strip()
+    parts = []
+    if title.strip():
+        parts.append(title.strip())
+    parts.append(cleaned)
+    src_lines = [f"• {c['source']}: {c['url']}" for c in citations if c.get("url") and c.get("source")]
+    if src_lines:
+        parts.append("Источники:\n" + "\n".join(src_lines))
+    return "\n\n".join(parts)
+
+
+async def send_vk(channel: dict, draft: dict, pub: dict, *, client: httpx.AsyncClient | None = None) -> SendResult:
+    cfg = channel["config"]
+    token = os.environ.get(cfg.get("token_env") or "VK_ACCESS_TOKEN") or cfg.get("access_token")
+    if not token:
+        return SendResult("failed", error="Токен доступа VK не задан (укажите в настройках канала или в переменной окружения)")
+    try:
+        owner_id = int(cfg.get("owner_id", 0))
+    except (ValueError, TypeError):
+        return SendResult("failed", error="Некорректный owner_id для VK")
+
+    text = render_vk_text(draft.get("title", ""), draft["body"], draft["citations"])
+    image_url = draft.get("image_url")
+    base = (cfg.get("api_base") or "https://api.vk.com").rstrip("/")
+    v = "5.199"
+
+    owns_client = client is None
+    if owns_client:
+        client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
+
+    attachments = []
+    try:
+        if image_url:
+            try:
+                img_data, ctype = await download_image(image_url)
+                group_id = abs(owner_id)
+                srv_res = await client.post(f"{base}/method/photos.getWallUploadServer", data={"access_token": token, "v": v, "group_id": group_id})
+                upload_server = srv_res.json().get("response", {})
+                upload_url = upload_server.get("upload_url")
+                if upload_url:
+                    ext = "png" if "png" in ctype else "jpg"
+                    files = {"photo": (f"cover.{ext}", img_data, ctype)}
+                    up_res = await client.post(upload_url, files=files)
+                    up_data = up_res.json()
+                    save_res = await client.post(
+                        f"{base}/method/photos.saveWallPhoto",
+                        data={
+                            "access_token": token,
+                            "v": v,
+                            "group_id": group_id,
+                            "photo": up_data.get("photo"),
+                            "server": up_data.get("server"),
+                            "hash": up_data.get("hash"),
+                        },
+                    )
+                    photos = save_res.json().get("response", [])
+                    if photos:
+                        p = photos[0]
+                        attachments.append(f"photo{p['owner_id']}_{p['id']}")
+            except Exception as e:
+                log.warning("failed to upload image to VK for draft %s: %s; posting text only", draft["id"], e)
+
+        data = {
+            "access_token": token,
+            "v": v,
+            "owner_id": owner_id,
+            "from_group": 1,
+            "message": text,
+        }
+        if attachments:
+            data["attachments"] = ",".join(attachments)
+
+        r = await client.post(f"{base}/method/wall.post", data=data)
+    except Exception as e:
+        return classify_exception(e)
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    try:
+        resp = r.json()
+    except Exception:
+        return SendResult("retry", error=f"HTTP {r.status_code}")
+
+    if "response" in resp:
+        post_id = resp["response"].get("post_id")
+        return SendResult("sent", external_id=f"vk_{owner_id}_{post_id}")
+    err = resp.get("error", {})
+    err_msg = err.get("error_msg", "Неизвестная ошибка VK")
+    err_code = err.get("error_code", 0)
+    if err_code in (6, 9, 10):
+        return SendResult("retry", error=f"VK error {err_code}: {err_msg}")
+    return SendResult("failed", error=f"VK error {err_code}: {err_msg}")
+
+
+async def send_discord(channel: dict, draft: dict, pub: dict, *, client: httpx.AsyncClient | None = None) -> SendResult:
+    cfg = channel["config"]
+    webhook_url = cfg.get("webhook_url")
+    if not webhook_url:
+        return SendResult("failed", error="Не указан webhook_url для Discord")
+
+    title = draft.get("title", "").strip()
+    raw_body = strip_citations(strip_source_footer(draft["body"]), {c["n"] for c in draft["citations"]}).strip()
+    image_url = draft.get("image_url")
+
+    embed: dict = {
+        "title": title[:256] if title else None,
+        "description": raw_body[:4096],
+        "color": 0x4B6BFB,
+    }
+    embed = {k: v for k, v in embed.items() if v is not None}
+    if image_url:
+        embed["image"] = {"url": image_url}
+
+    citations = draft.get("citations", [])
+    src_links = [f"[{c['source']}]({c['url']})" for c in citations if c.get("url") and c.get("source")]
+    if src_links:
+        embed["fields"] = [{"name": "Источники", "value": ", ".join(src_links)[:1024], "inline": False}]
+
+    payload = {
+        "username": "Pulse",
+        "embeds": [embed],
+    }
+
+    owns_client = client is None
+    if owns_client:
+        client = guarded_client(timeout=httpx.Timeout(20.0, connect=10.0))
+    try:
+        r = await client.post(webhook_url, json=payload, params={"wait": "true"})
+    except ValueError as e:
+        return SendResult("failed", error=str(e))
+    except Exception as e:
+        return classify_exception(e)
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    if 200 <= r.status_code < 300:
+        msg_id = ""
+        try:
+            msg_id = str(r.json().get("id", ""))
+        except Exception:
+            pass
+        return SendResult("sent", external_id=msg_id or f"discord-{pub['id']}")
+    if r.status_code == 429:
+        try:
+            retry_after = float(r.json().get("retry_after", 5.0))
+        except Exception:
+            retry_after = 5.0
+        return SendResult("retry", error="Rate limited", retry_after=retry_after)
+    if r.status_code >= 500:
+        return SendResult("retry", error=f"HTTP {r.status_code}")
+    return SendResult("failed", error=f"HTTP {r.status_code}: {r.text[:200]}")
+
+
 async def send_console(channel: dict, draft: dict, pub: dict) -> SendResult:
     log.info("CONSOLE PUBLISH draft=%s: %s", draft["id"], draft["title"])
     return SendResult("sent", external_id=f"console-{pub['id']}")
 
 
-SENDERS = {"telegram": send_telegram, "webhook": send_webhook, "console": send_console}
+SENDERS = {
+    "telegram": send_telegram,
+    "webhook": send_webhook,
+    "console": send_console,
+    "vk": send_vk,
+    "discord": send_discord,
+}
 
 
 async def claim() -> dict | None:
@@ -251,11 +443,20 @@ async def process_one(senders: dict | None = None) -> bool:
     if not pub:
         return False
     draft = await db.fetchone("SELECT * FROM drafts WHERE id = %s", (pub["draft_id"],))
+    # Черновик мог быть удалён пока публикация стояла в очереди;
+    # recover_stale использует INNER JOIN drafts и не подхватит такую запись.
+    if not draft:
+        await db.execute(
+            "UPDATE publications SET status = 'cancelled', locked_until = NULL, error = 'Черновик удалён' WHERE id = %s",
+            (pub["id"],),
+        )
+        return True
     channel = await db.fetchone("SELECT * FROM channels WHERE id = %s", (pub["channel_id"],))
     project = await db.fetchone("SELECT auto_retry_unknown FROM projects WHERE id = %s", (draft["project_id"],))
     if not channel or not channel["enabled"]:
         await db.execute("UPDATE publications SET status = 'cancelled', locked_until = NULL, error = 'Канал отключён или удалён' WHERE id = %s", (pub["id"],))
         return True
+    channel = {**channel, "config": decrypt_channel_config(dict(channel["config"] or {}))}
     try:
         res = await senders[channel["type"]](channel, draft, pub)
     except Exception as e:
@@ -291,6 +492,10 @@ async def check_channel(channel: dict) -> dict:
     if kind == "console":
         return {"ok": True, "message": "Консольный канал работает: посты записываются в журнал воркера. Никуда наружу ничего не отправляется."}
     try:
+        if kind == "discord":
+            return await _check_discord(cfg)
+        if kind == "vk":
+            return await _check_vk(cfg)
         return await (_check_telegram(cfg) if kind == "telegram" else _check_webhook(cfg))
     except httpx.HTTPError as e:
         return {"ok": False, "message": f"Нет связи: {type(e).__name__}: {e}"}
@@ -336,9 +541,51 @@ async def _check_telegram(cfg: dict) -> dict:
 async def _check_webhook(cfg: dict) -> dict:
     url = cfg.get("url", "")
     try:
-        await check_url(url)
+        async with guarded_client(timeout=10.0) as client:
+            r = await client.request("OPTIONS", url)  # без тела: получатель не увидит ни поста, ни «проверочного» события
     except ValueError as e:
         return {"ok": False, "message": str(e)}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.request("OPTIONS", url)  # без тела: получатель не увидит ни поста, ни «проверочного» события
     return {"ok": True, "message": f"Адрес отвечает (HTTP {r.status_code}). Данные не отправлялись; принимает ли получатель посты, эта проверка не показывает."}
+
+
+async def _check_discord(cfg: dict) -> dict:
+    url = cfg.get("webhook_url", "")
+    try:
+        async with guarded_client(timeout=10.0) as client:
+            r = await client.get(url)
+    except ValueError as e:
+        return {"ok": False, "message": str(e)}
+    if r.status_code == 200:
+        data = r.json()
+        channel_id = data.get("channel_id", "")
+        name = data.get("name", "Webhook")
+        return {"ok": True, "message": f"Discord вебхук «{name}» доступен (канал #{channel_id}). Проверка ничего не отправила."}
+    return {"ok": False, "message": f"Discord вернул ошибку: HTTP {r.status_code}"}
+
+
+async def _check_vk(cfg: dict) -> dict:
+    token = os.environ.get(cfg.get("token_env") or "VK_ACCESS_TOKEN") or cfg.get("access_token")
+    if not token:
+        return {"ok": False, "message": "Токен доступа VK не задан. Укажите access_token или token_env."}
+    owner_id = cfg.get("owner_id")
+    if not owner_id:
+        return {"ok": False, "message": "Не указан owner_id сообщества ВКонтакте."}
+    base = (cfg.get("api_base") or "https://api.vk.com").rstrip("/")
+    v = "5.199"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        group_id = abs(int(owner_id))
+        r = await client.post(f"{base}/method/groups.getById", data={"access_token": token, "v": v, "group_id": group_id})
+        try:
+            data = r.json()
+        except Exception:
+            return {"ok": False, "message": f"VK вернул HTTP {r.status_code}"}
+        if "response" in data and data["response"]:
+            resp = data["response"]
+            groups = resp.get("groups", []) if isinstance(resp, dict) else resp
+            group = groups[0] if groups else {}
+            name = group.get("name", str(group_id))
+            return {"ok": True, "message": f"Сообщество «{name}» найдено, токен действителен. Проверка ничего не опубликовала."}
+        err = data.get("error", {})
+        return {"ok": False, "message": f"VK ошибка: {err.get('error_msg', 'не удалось получить данные группы')}"}
+

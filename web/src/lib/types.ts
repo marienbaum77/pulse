@@ -15,6 +15,7 @@ export interface Cluster {
   id: number; title: string; state: ClusterState; item_count: number; source_count: number;
   first_seen: string; last_seen: string; score: number | null; score_breakdown: Record<string, ScorePart> | null;
   published_at: string | null; arrivals: string[] | null; image_item_id: number | null;
+  interest?: number | null; interest_reason?: string | null;
 }
 export interface ClusterDetail extends Omit<Cluster, "arrivals"> {
   project_id: number;
@@ -55,7 +56,7 @@ export interface Source {
   last_entry_count: number; last_new_count: number;
 }
 export interface Channel {
-  id: number; project_id: number; type: "telegram" | "webhook" | "console"; name: string; config: Record<string, string>;
+  id: number; project_id: number; type: "telegram" | "webhook" | "console" | "vk" | "discord"; name: string; config: Record<string, string>;
   enabled: boolean; has_secret: boolean;
 }
 export interface Schedule {

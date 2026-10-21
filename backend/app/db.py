@@ -11,11 +11,21 @@ from psycopg.rows import dict_row
 from psycopg.types import TypeInfo
 from psycopg_pool import AsyncConnectionPool
 
+from enum import IntEnum
+
 from .config import get_settings
 
 log = logging.getLogger("pulse.db")
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 pool: AsyncConnectionPool | None = None
+
+
+class AdvisoryLock(IntEnum):
+    """Централизованный реестр ID advisory-блокировок для предотвращения коллизий."""
+    MIGRATIONS = 747001
+    JOB_QUEUE = 747002
+    PROJECT_PIPELINE = 1
+    PROJECT_TOPIC_BACKFILL = 3
 
 
 async def migrate() -> None:
@@ -32,7 +42,7 @@ async def migrate() -> None:
     else:
         raise RuntimeError(f"База данных недоступна: {last_err}")
     async with conn:
-        await conn.execute("SELECT pg_advisory_lock(747001)")
+        await conn.execute("SELECT pg_advisory_lock(%s)", (AdvisoryLock.MIGRATIONS,))
         try:
             await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
             await conn.execute(
@@ -49,7 +59,7 @@ async def migrate() -> None:
                     await conn.execute(f.read_text(encoding="utf-8"))
                     await conn.execute("INSERT INTO schema_migrations(name) VALUES (%s)", (f.name,))
         finally:
-            await conn.execute("SELECT pg_advisory_unlock(747001)")
+            await conn.execute("SELECT pg_advisory_unlock(%s)", (AdvisoryLock.MIGRATIONS,))
 
 
 class _NumpyLoader(VectorLoader):
@@ -76,16 +86,22 @@ async def _configure(conn: psycopg.AsyncConnection) -> None:
 async def open_pool() -> None:
     global pool
     await migrate()
+    s = get_settings()
     pool = AsyncConnectionPool(
-        get_settings().database_url,
-        min_size=1,
-        max_size=12,
+        s.database_url,
+        min_size=s.db_pool_min,
+        max_size=s.db_pool_max,
         kwargs={"row_factory": dict_row},
         configure=_configure,
         check=AsyncConnectionPool.check_connection,
         open=False,
     )
     await pool.open(wait=True, timeout=30)
+    from .channel_secrets import encrypt_plaintext_channel_secrets
+
+    n = await encrypt_plaintext_channel_secrets()
+    if n:
+        log.info("encrypted plaintext secrets on %s channel(s)", n)
 
 
 async def close_pool() -> None:

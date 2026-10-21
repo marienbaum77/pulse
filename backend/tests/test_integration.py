@@ -738,7 +738,7 @@ async def test_telegram_message_has_no_markers_and_named_sources(monkeypatch):
         sent.update(json.loads(body))
         return 200, {"Content-Type": "application/json"}, '{"ok":true,"result":{"message_id":5}}'
 
-    draft = {"id": 1, "title": "З", "body": "Факт. [1][2] Ещё факт [1].\n\nИсточники:\nТехДень, 27.09 17:57", 
+    draft = {"id": 1, "title": "З", "body": "Факт. [1][2] Ещё факт [1].\n\nИсточники:\nТехДень, 27.09 17:57",
              "citations": [{"n": 1, "source": "ТехДень", "url": "https://t.test/1"}, {"n": 2, "source": "Дозор", "url": ""}]}
     async with MiniServer(handler) as srv:
         monkeypatch.setenv("T_BOT", "OK")

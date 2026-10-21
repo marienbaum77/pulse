@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Publication channels: VK (wall) and Discord (webhook embeds)
+- Stage-1 lexical dedup via MinHash/LSH before embeddings (MINHASH_DEDUP_ENABLED, MINHASH_THRESHOLD)
+- At-rest encryption for channel secrets (secret, ccess_token, Discord webhook_url) derived from SECRET_KEY; plaintext values are re-encrypted on API/worker startup
+- SSRF-safe GuardedAsyncTransport: resolve + validate, then connect to pinned IP (Host/SNI preserved)
+- Frontend 	ypecheck and Vitest smoke tests in CI
+- Comprehensive filtering and sorting in Stories (/trends): search by title, sort by NWS / interest / date / items / sources / topic fit, filters for min NWS, interest score, images
+- Interactive timeline tooltips and timestamps for publication arrival dots (ArrivalStrip)
+- Queue cancellation API (DELETE /api/generation-queue/{job_id}) and cancel action in Drafts UI
+
+### Changed
+
+- Discord webhook URL is no longer returned by the API; empty field on edit keeps the stored value
+- Docs and README cover VK, Discord, and MinHash
+- Release workflow supports manual trigger via workflow_dispatch in addition to version tags
+
+### Fixed
+
+- Telegram photo publishing: check visible length after HTML parsing so posts with citations send as native sendPhoto rather than falling back to text preview links
+- Post generation length: strictly enforce max_length in LLM prompts and post truncation (eliminated +200 buffer)
+- Generation queue timeout: reduced RSS enrichment wait from 10 minutes to 60 seconds to prevent generation stall
+
 ## [1.0.1] - 2026-10-07
 
 ### Added

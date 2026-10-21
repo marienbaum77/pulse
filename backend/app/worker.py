@@ -52,8 +52,13 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop.set)
-        except NotImplementedError:
-            pass
+        except (NotImplementedError, OSError):
+            # Windows ProactorEventLoop не поддерживает add_signal_handler;
+            # используем signal.signal() как fallback для корректного завершения.
+            try:
+                signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
+            except (OSError, ValueError):
+                pass
     lanes = plan_lanes(s.worker_concurrency)
     log.info(
         "worker started (provider=%s, concurrency=%d, lanes=%s)",

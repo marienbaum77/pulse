@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -16,7 +17,9 @@ from .textutil import utcnow
 log = logging.getLogger("pulse.scheduler")
 GRACE = timedelta(minutes=10)  # пропущенный запуск старше этого срока не «догоняем»
 MAINTENANCE_EVERY = timedelta(minutes=10)
-_last_maintenance: datetime | None = None
+# Случайный сдвиг при старте: не запускаем maintenance немедленно, чтобы при перезапуске
+# нескольких воркеров одновременно не создавать пиковую нагрузку на все проекты сразу.
+_last_maintenance: datetime | None = utcnow() - MAINTENANCE_EVERY * random.uniform(0.0, 0.5)
 
 
 def last_fire(cron: str, tz: str, now: datetime) -> datetime:

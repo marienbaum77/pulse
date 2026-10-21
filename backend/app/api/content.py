@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from .. import db, jobs, publisher
+from .. import db, events, jobs, publisher
 from ..images import ImageUnavailable, get_image
 from ..pipeline import drafts_service
 from ..pipeline.generate import automatic_review, check_text, default_image_urls
@@ -63,14 +63,32 @@ async def import_items(body: ImportBody, user=Depends(editor)):
 
 # ---------- clusters ----------
 @router.get("/clusters")
-async def list_clusters(project_id: int, state: str | None = None, limit: int = Query(50, le=200), user=Depends(viewer)):
+async def list_clusters(
+    project_id: int,
+    state: str | None = None,
+    search: str | None = None,
+    min_score: float | None = None,
+    min_interest: float | None = None,
+    limit: int = Query(50, le=200),
+    user=Depends(viewer),
+):
     where, params = ["c.project_id = %s"], [project_id]
     if state:
         where.append("c.state = %s")
         params.append(state)
+    if search:
+        where.append("c.title ILIKE %s")
+        params.append(f"%{search.strip()}%")
+    if min_score is not None:
+        where.append("c.score >= %s")
+        params.append(min_score)
+    if min_interest is not None:
+        where.append("c.interest >= %s")
+        params.append(min_interest)
     return await db.fetchall(
         "SELECT c.id, c.title, c.state, c.item_count, c.source_count, c.first_seen, c.last_seen, c.score, c.score_breakdown, c.published_at, "
-        "(SELECT array_agg(i.published_at ORDER BY i.published_at) FROM items i WHERE i.cluster_id = c.id AND i.status = 'clustered') AS arrivals, "
+        "c.interest, c.interest_reason, "
+        "(SELECT array_agg(i.published_at ORDER BY i.published_at) FROM items i WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate')) AS arrivals, "
         "(SELECT i.id FROM items i WHERE i.cluster_id = c.id AND i.status = 'clustered' AND i.image_url IS NOT NULL ORDER BY i.published_at DESC LIMIT 1) AS image_item_id "
         f"FROM clusters c WHERE {' AND '.join(where)} ORDER BY (c.state = 'open') DESC, "
         "COALESCE((c.score_breakdown->'topic_fit'->>'value')::float, 0.5) DESC, c.score DESC NULLS LAST, c.id DESC LIMIT %s",
@@ -94,7 +112,7 @@ async def get_cluster(cid: int, user=Depends(viewer)):
         raise HTTPException(404, "Сюжет не найден")
     c["items"] = await db.fetchall(
         "SELECT i.id, i.title, i.url, i.published_at, COALESCE(NULLIF(i.publisher_name, ''), s.name) AS source_name, (i.image_url IS NOT NULL) AS has_image FROM items i LEFT JOIN sources s ON s.id = i.source_id "
-        "WHERE i.cluster_id = %s AND i.status = 'clustered' ORDER BY i.published_at",
+        "WHERE i.cluster_id = %s AND i.status IN ('clustered', 'duplicate') ORDER BY i.published_at",
         (cid,),
     )
     c["image_item_id"] = next((i["id"] for i in reversed(c["items"]) if i["has_image"]), None)
@@ -170,11 +188,27 @@ async def generation_queue(project_id: int, user=Depends(viewer)):
     return await jobs.queued_generations(project_id)
 
 
+@router.delete("/generation-queue/{job_id}")
+async def cancel_generation_job(job_id: int, project_id: int, user=Depends(editor)):
+    success = await jobs.cancel_job(job_id, project_id)
+    if not success:
+        raise HTTPException(404, "Задача генерации не найдена или уже завершена")
+    await audit(user, "cancel", "job", job_id, {"project_id": project_id})
+    return {"ok": True}
+
+
 @router.delete("/drafts")
 async def clear_drafts(project_id: int, user=Depends(editor)):
     deleted = await drafts_service.clear(project_id)
-    await audit(user, "clear", "drafts", None, {"project_id": project_id, "deleted": deleted})
-    return {"deleted": deleted}
+    cancelled_jobs = await db.execute(
+        "UPDATE jobs SET status = 'failed', finished_at = now(), last_error = 'Отменено пользователем' "
+        "WHERE kind = 'generate' AND status = 'queued' AND payload->>'project_id' = %s",
+        (str(project_id),),
+    )
+    if cancelled_jobs:
+        await events.notify("generation", project_id=project_id)
+    await audit(user, "clear", "drafts", None, {"project_id": project_id, "deleted": deleted, "cancelled_jobs": cancelled_jobs})
+    return {"deleted": deleted, "cancelled_jobs": cancelled_jobs}
 
 
 async def _image_response(url: str | None) -> Response:
@@ -221,10 +255,11 @@ async def edit_draft(did: int, body: DraftPatch, user=Depends(editor)):
     new_body = body.body if body.body is not None else d["body"]
     new_title = body.title if body.title is not None else d["title"]
     checks = {**check_text(new_body, d["citations"]), "mode": d["params"].get("mode", "extractive"), "edited": True}
-    project = await db.fetchone("SELECT publish_mode, max_length FROM projects WHERE id = %s", (d["project_id"],))
+    project = await db.fetchone("SELECT publish_mode, max_length, language FROM projects WHERE id = %s", (d["project_id"],))
     if project["publish_mode"] in ("auto", "full_auto"):
         checks["automatic_review"] = automatic_review(
             new_title, new_body, d["citations"], checks, project["max_length"], d["kind"],
+            project["language"],
         )
     new_image = d["image_url"]
     if body.remove_image:
@@ -243,10 +278,15 @@ async def edit_draft(did: int, body: DraftPatch, user=Depends(editor)):
     return row
 
 
+class ApproveBody(BaseModel):
+    channel_ids: list[int] | None = None
+
+
 @router.post("/drafts/{did}/approve")
-async def approve_draft(did: int, user=Depends(editor)):
+async def approve_draft(did: int, body: ApproveBody | None = None, user=Depends(editor)):
+    channel_ids = body.channel_ids if body else None
     try:
-        changed = await drafts_service.approve(did, user["id"])
+        changed = await drafts_service.approve(did, user["id"], channel_ids=channel_ids)
     except drafts_service.NoChannels:
         raise HTTPException(409, "У проекта нет включённых каналов публикации — добавьте канал")
     if not changed:

@@ -32,7 +32,7 @@ def _provider_error_detail(error: Exception, timeout: float) -> str:
     if isinstance(error, httpx.ReadTimeout):
         return f"ReadTimeout: модель не ответила за {timeout:g} с (LLM_TIMEOUT)"
     if isinstance(error, httpx.ConnectTimeout):
-        return f"ConnectTimeout: не удалось подключиться к серверу модели за 10 с"
+        return "ConnectTimeout: не удалось подключиться к серверу модели за 10 с"
     message = str(error).strip() or "без подробностей"
     return f"{type(error).__name__}: {message}"
 
@@ -119,8 +119,9 @@ class OpenAICompatProvider:
 
     async def embed(self, texts: list[str], project_id: int | None = None) -> np.ndarray:
         vectors: list[list[float]] = []
-        for i in range(0, len(texts), 8):
-            batch = texts[i : i + 8]
+        batch_size = get_settings().embed_batch_size
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
             t0 = time.monotonic()
             try:
                 r = await _post_with_retry(self._embed_client, "/embeddings", {"model": self.embed_model, "input": batch})
@@ -154,7 +155,10 @@ class OpenAICompatProvider:
             )
             r.raise_for_status()
             body = r.json()
-            text = body["choices"][0]["message"]["content"] or ""
+            choices = body.get("choices") or []
+            if not choices:
+                raise LLMUnavailable(f"Модель {self.chat_model} вернула пустой список choices")
+            text = choices[0]["message"]["content"] or ""
             usage = body.get("usage") or {}
             await _log_call(project_id, "chat", self.chat_model, usage.get("prompt_tokens"), usage.get("completion_tokens"), int((time.monotonic() - t0) * 1000), True)
             return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
@@ -226,6 +230,7 @@ async def refresh_provider() -> object:
     )
     if _provider is not None and _runtime_fingerprint == fp:
         return _provider
+    old = _provider
     if s.llm_provider == "openai":
         p = OpenAICompatProvider()
         p.chat_model = chat
@@ -234,6 +239,14 @@ async def refresh_provider() -> object:
     else:
         _provider = StubProvider()
     _runtime_fingerprint = fp
+    # Закрываем HTTP-клиент старого провайдера, чтобы не утекали соединения
+    if old is not None and hasattr(old, "_client"):
+        try:
+            await old._client.aclose()
+            if hasattr(old, "_embed_client") and old._embed_client is not old._client:
+                await old._embed_client.aclose()
+        except Exception:
+            log.debug("failed to close old provider client", exc_info=True)
     return _provider
 
 
