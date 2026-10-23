@@ -15,6 +15,11 @@ SYSTEM = """Ты — главный редактор новостного кан
 Высокие оценки: важные события, новые факты и цифры, последствия для читателя, громкие релизы и инциденты.
 Низкие оценки: мелкие обновления, реклама и анонсы без новизны, слухи, повторы известного, тема вне интересов канала.
 Ответь ТОЛЬКО JSON без пояснений вокруг: {{"score": число от 0 до 10, "reason": "одно короткое предложение"}}"""
+CURATED_SYSTEM = """Ты — главный редактор тематического канала. Тематика: {topic}. Оцени, насколько этот материал (статья, видео или пост) ценен для аудитории канала, по шкале от 0 до 10.
+Высокие оценки: полезные разборы и руководства, глубокие обзоры, оригинальные идеи и опыт, качественные видео точно по теме канала.
+Низкие оценки: реклама и продающие тексты, кликбейт, поверхностные заметки без содержания, тема вне интересов канала.
+Ответь ТОЛЬКО JSON без пояснений вокруг: {{"score": число от 0 до 10, "reason": "одно короткое предложение"}}"""
+KIND_LABELS = {"video": "видео", "post": "пост", "article": "статья"}
 
 
 def parse_rating(raw: str) -> tuple[float, str] | None:
@@ -32,7 +37,7 @@ def parse_rating(raw: str) -> tuple[float, str] | None:
 
 async def rate_cluster(project: dict, provider, cluster_id: int) -> float | None:
     """Возвращает оценку 0-10 или None, если модель недоступна; кеш обновляется, только если сюжет вырос."""
-    row = await db.fetchone("SELECT title, item_count, interest, interest_items FROM clusters WHERE id = %s", (cluster_id,))
+    row = await db.fetchone("SELECT title, item_count, interest, interest_items, mode FROM clusters WHERE id = %s", (cluster_id,))
     if not row:
         return None
     if row["interest"] is not None and row["item_count"] < (row["interest_items"] or 0) * RERATE_GROWTH:
@@ -40,13 +45,22 @@ async def rate_cluster(project: dict, provider, cluster_id: int) -> float | None
     if not getattr(provider, "supports_chat", False):
         return None
     items = await db.fetchall(
-        "SELECT i.title, i.text, s.name AS source FROM items i LEFT JOIN sources s ON s.id = i.source_id "
+        "SELECT i.title, i.text, i.kind, s.name AS source FROM items i LEFT JOIN sources s ON s.id = i.source_id "
         "WHERE i.cluster_id = %s AND i.status = 'clustered' ORDER BY i.published_at DESC LIMIT 4",
         (cluster_id,),
     )
-    lines = [f"- {i['source'] or 'Источник'}: {i['title']}. {' '.join(split_sentences(i['text'])[:2])[:300]}" for i in items]
-    prompt = f"Сюжет: {row['title']}\nМатериалов: {row['item_count']}\n" + "\n".join(lines)
-    system = SYSTEM.format(topic=project["topic"] or "новости")
+    if row["mode"] == "curated":
+        # У одиночного материала охвата нет — модель судит по содержанию, поэтому текста даём больше.
+        lines = [
+            f"- {KIND_LABELS.get(i['kind'], 'материал')}, {i['source'] or 'Источник'}: {i['title']}. {' '.join(split_sentences(i['text'])[:6])[:900]}"
+            for i in items
+        ]
+        prompt = f"Материал: {row['title']}\n" + "\n".join(lines)
+        system = CURATED_SYSTEM.format(topic=project["topic"] or "без ограничений")
+    else:
+        lines = [f"- {i['source'] or 'Источник'}: {i['title']}. {' '.join(split_sentences(i['text'])[:2])[:300]}" for i in items]
+        prompt = f"Сюжет: {row['title']}\nМатериалов: {row['item_count']}\n" + "\n".join(lines)
+        system = SYSTEM.format(topic=project["topic"] or "новости")
     try:
         raw = await provider.chat(system, prompt, max_tokens=80, temperature=0.1, project_id=project["id"])
     except LLMUnavailable as e:

@@ -55,7 +55,7 @@ async def fire_schedules(now: datetime) -> int:
 async def poll_sources() -> int:
     due = await db.fetchall(
         "UPDATE sources SET next_poll_at = now() + make_interval(mins => poll_minutes) "
-        "WHERE enabled AND type = 'rss' AND next_poll_at <= now() AND project_id IN (SELECT id FROM projects WHERE active) RETURNING id"
+        "WHERE enabled AND type <> 'manual' AND next_poll_at <= now() AND project_id IN (SELECT id FROM projects WHERE active) RETURNING id"
     )
     for s in due:
         await jobs.enqueue("ingest_source", {"source_id": s["id"]}, dedupe_key=f"ingest:{s['id']}")
@@ -72,6 +72,8 @@ async def maintenance() -> None:
         (days,),
     )
     await db.execute("DELETE FROM jobs WHERE status IN ('done', 'failed') AND finished_at < now() - interval '7 days'")
+    # Память о виденном curated-контенте держим год: дольше старые ссылки поиск почти не возвращает.
+    await db.execute("DELETE FROM content_seen WHERE seen_at < now() - interval '365 days'")
     await db.execute("DELETE FROM llm_calls WHERE created_at < now() - interval '30 days'")
     await asyncio.to_thread(
         images.prune_cache,

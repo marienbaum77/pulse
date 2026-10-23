@@ -1,4 +1,4 @@
-import { SCORE_HINTS, SCORE_LABELS } from "../lib/labels";
+import { BREAKDOWN_HINTS, BREAKDOWN_LABELS } from "../lib/labels";
 import { ago, dateTime, fmtNum, plural, shortDay } from "../lib/format";
 import type { ScorePart } from "../lib/types";
 
@@ -86,8 +86,8 @@ export function Breakdown({ parts }: { parts: Record<string, ScorePart> }) {
         const neg = p.contribution < 0;
         const topicFit = key === "topic_fit";
         return (
-          <div key={key} className="grid grid-cols-[150px_1fr_84px] items-center gap-3 text-[13px]" title={SCORE_HINTS[key]}>
-            <span className={neg ? "text-bad" : ""}>{SCORE_LABELS[key] ?? key}</span>
+          <div key={key} className="grid grid-cols-[150px_1fr_84px] items-center gap-3 text-[13px]" title={BREAKDOWN_HINTS[key]}>
+            <span className={neg ? "text-bad" : ""}>{BREAKDOWN_LABELS[key] ?? key}</span>
             <div className="h-2 bg-sunken" style={{ borderRadius: 1 }}>
               {!p.neutral && <div className="h-full" style={{ width: `${Math.min(1, p.value) * 100}%`, background: neg ? "var(--bad)" : "var(--brand)", opacity: neg ? 0.8 : 0.75, borderRadius: 1 }} />}
             </div>

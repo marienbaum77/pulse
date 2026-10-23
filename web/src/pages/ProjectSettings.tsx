@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth, useProject, useToast } from "../lib/context";
-import { SCORE_HINTS, SCORE_LABELS } from "../lib/labels";
+import { CONTENT_PROFILES, SCORE_HINTS, SCORE_LABELS } from "../lib/labels";
 import type { Project, ProjectInput } from "../lib/types";
 import { Field, PageHeader, Spinner, Toggle } from "../components/ui";
 
@@ -12,6 +12,7 @@ const BLANK: ProjectInput = {
   generation_mode: "llm", publish_mode: "review", window_hours: 48, sim_threshold: 0.72, topic_threshold: 0.4,
   weights: { coverage: 0.15, authority: 0.075, freshness: 0.1, velocity: 0.075, topic_fit: 0.6 },
   context_items: 6, context_sentences: 3, min_items: 2, auto_retry_unknown: false, show_sources: true, active: true,
+  content_profile: "news", curated_window_hours: 336,
 };
 const toInput = (p: Project): ProjectInput => { const { id: _id, prompt_version: _v, ...rest } = p; return rest; };
 
@@ -74,6 +75,11 @@ export default function ProjectSettings() {
               placeholder={"базы данных и СУБД\nоблачные сервисы и инфраструктура\nискусственный интеллект и машинное обучение\nразработка и программирование\nкибербезопасность\nгаджеты и потребительская электроника"}
             />
           </Field>
+          <Field label="Тип канала" hint={<>{CONTENT_PROFILES[f.content_profile].hint} Смена типа действует на материалы, собранные после сохранения.</>}>
+            <select className="field max-w-[420px]" value={f.content_profile} onChange={(e) => set("content_profile", e.target.value as ProjectInput["content_profile"])} disabled={ro}>
+              {(Object.keys(CONTENT_PROFILES) as ProjectInput["content_profile"][]).map((k) => <option key={k} value={k}>{CONTENT_PROFILES[k].label}</option>)}
+            </select>
+          </Field>
         </Section>
 
         <Section title="Генерация текста">
@@ -107,6 +113,11 @@ export default function ProjectSettings() {
         </Section>
 
         <Section title="Поиск сюжетов">
+          {f.content_profile !== "news" && (
+            <Field label="Сколько дней подборочный материал остаётся кандидатом" hint="Видео и статьи не устаревают за двое суток, как новости: кандидат ждёт публикации весь этот срок, а свежесть падает вдвое каждую четверть срока. Окно и минимум материалов ниже действуют только на новостные сюжеты.">
+              <input className="field num max-w-[160px]" type="number" min={1} max={90} value={Math.round(f.curated_window_hours / 24)} onChange={(e) => set("curated_window_hours", num(e.target.value, 1, 90, 14) * 24)} disabled={ro} />
+            </Field>
+          )}
           <div className="grid sm:grid-cols-2 gap-5">
             <Field label="Окно, часов" hint="Материалы группируются в сюжет, если вышли в пределах окна.">
               <input className="field num" type="number" min={1} max={720} value={f.window_hours} onChange={(e) => set("window_hours", num(e.target.value, 1, 720, 48))} disabled={ro} />

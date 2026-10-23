@@ -6,7 +6,11 @@ export interface Project {
   prompt_template: string; prompt_version: number; generation_mode: "llm" | "extractive" | "auto"; publish_mode: "review" | "auto" | "full_auto";
   window_hours: number; sim_threshold: number; topic_threshold: number; weights: Record<string, number>;
   context_items: number; context_sentences: number; min_items: number; auto_retry_unknown: boolean; show_sources: boolean; active: boolean;
+  content_profile: ContentProfile; curated_window_hours: number;
 }
+export type ContentProfile = "news" | "curated" | "mixed";
+export type ContentMode = "news" | "curated";
+export type ContentKind = "article" | "video" | "post";
 export type ProjectInput = Omit<Project, "id" | "prompt_version">;
 
 export interface ScorePart { value: number; weight: number; contribution: number; neutral?: boolean }
@@ -16,12 +20,13 @@ export interface Cluster {
   first_seen: string; last_seen: string; score: number | null; score_breakdown: Record<string, ScorePart> | null;
   published_at: string | null; arrivals: string[] | null; image_item_id: number | null;
   interest?: number | null; interest_reason?: string | null;
+  mode?: ContentMode; kind?: ContentKind | null;
 }
 export interface ClusterDetail extends Omit<Cluster, "arrivals"> {
   project_id: number;
   interest: number | null; interest_reason: string | null;
   image_item_id: number | null;
-  items: { id: number; title: string; url: string; published_at: string; source_name: string | null; has_image: boolean }[];
+  items: { id: number; title: string; url: string; published_at: string; source_name: string | null; has_image: boolean; kind?: ContentKind; meta?: Record<string, unknown> }[];
   drafts: { id: number; title: string; status: DraftStatus; created_at: string }[];
 }
 
@@ -50,8 +55,18 @@ export interface Publication {
   sent_at: string | null; draft_id: number; draft_title: string; channel_name: string; channel_type: string;
 }
 
+export type SourceType = "rss" | "manual" | "youtube" | "web_search" | "site" | "reddit" | "telegram";
+export type ConnectorType = Exclude<SourceType, "rss" | "manual">;
+export interface SourceConfig {
+  kind?: "channel" | "playlist" | "search"; query?: string; channel_id?: string; playlist_id?: string; feed_url?: string;
+  subreddit?: string; sort?: string; period?: string; channel?: string; time_range?: string | null; category?: string; mode?: ContentMode;
+}
+export interface ConnectorPreview {
+  name: string; url: string; mode: ContentMode; feed_url: string | null; count: number; new_count: number;
+  sample: { title: string; publisher: string | null; kind: ContentKind; url: string }[];
+}
 export interface Source {
-  id: number; project_id: number; type: "rss" | "manual"; name: string; url: string; authority: number; poll_minutes: number;
+  id: number; project_id: number; type: SourceType; name: string; url: string; config: SourceConfig; authority: number; poll_minutes: number;
   enabled: boolean; last_fetched_at: string | null; last_ok_at: string | null; last_error: string | null; item_count: number;
   last_entry_count: number; last_new_count: number;
 }

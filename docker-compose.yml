@@ -24,6 +24,8 @@ x-backend: &backend
     IMAGE_CACHE_MAX_MB: ${IMAGE_CACHE_MAX_MB:-500}
     IMAGE_CACHE_MAX_AGE_DAYS: ${IMAGE_CACHE_MAX_AGE_DAYS:-30}
     TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+    YOUTUBE_PROXY_URL: ${YOUTUBE_PROXY_URL:-}
     ALLOW_PRIVATE_URLS: ${ALLOW_PRIVATE_URLS:-false}
     RETENTION_DAYS: ${RETENTION_DAYS:-30}
   volumes:
@@ -90,6 +92,16 @@ services:
     #   resources:
     #     reservations:
     #       devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+  # Метапоисковик для источников «Веб-поиск» и поиска видео YouTube. Порт наружу не публикуется: доступен только api и worker.
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-${SECRET_KEY:?Задайте SECRET_KEY в .env (openssl rand -hex 32)}}
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
 
   # Бэкап Postgres на диск хоста (./backups): раз в BACKUP_INTERVAL_HOURS, без векторов (они пересчитываются), с ротацией.
   # Том pgdata переживает пересоздание контейнеров, но не docker compose down -v и не потерю диска — для этого и нужны дампы.
