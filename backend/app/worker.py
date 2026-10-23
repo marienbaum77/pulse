@@ -5,13 +5,13 @@ import signal
 
 from . import db, jobs, publisher, scheduler
 from .config import get_settings
-from .pipeline import generate, ingest, process  # noqa: F401  (регистрируют обработчики задач)
+from .pipeline import discovery, generate, ingest, process  # noqa: F401  (регистрируют обработчики задач)
 
 log = logging.getLogger("pulse.worker")
 
 # Сбор лент дешёвый и не должен ждать долгую обработку проектов; генерация — плановая и тоже получает свою полосу.
 INGEST_KINDS = ("ingest_source", "enrich_articles")
-GENERATE_KINDS = ("generate",)
+GENERATE_KINDS = ("generate", "discover_sources")  # подбор источников тоже долгий: LLM и десятки поисковых запросов
 Lane = tuple[tuple[str, ...] | None, tuple[str, ...] | None]  # (include_kinds, exclude_kinds)
 
 

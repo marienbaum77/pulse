@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Post formats by material: video recommendation, article breakdown, post retelling; digests of curated items are titled «Подборка»
 - `content_seen` memory so curated links removed by retention are not re-added by search
 - `SEARXNG_URL`, `SEARXNG_SECRET`, `YOUTUBE_PROXY_URL` settings
+- Source discovery: the LLM turns the project topic into search queries, SearXNG results are grouped into candidate sources (YouTube channels via oEmbed, sites with RSS or article lists, subreddits, Telegram channels), ranked by repetition across queries and model rating, and offered to the editor to add or dismiss
 - Content plan: schedule slots filtered by material kind (news/video/article/post), drafts prepared ahead of the slot (`lead_minutes`) and published at the slot time, per-project source cooldown, and a «Контент-план» page with upcoming slots, their drafts, candidate counts and past outcomes
 
 - Publication channels: VK (wall) and Discord (webhook embeds)
@@ -34,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - File import (`/items/import`) now follows the project's channel type instead of always adding news items
+- YouTube search sources no longer pass `engines=youtube` to SearXNG (it is combined with the category, not a filter); non-YouTube results are dropped by URL, so videos found by bing/duckduckgo still count when the youtube engine is blocked
 
 - Telegram photo publishing: check visible length after HTML parsing so posts with citations send as native sendPhoto rather than falling back to text preview links
 - Post generation length: strictly enforce max_length in LLM prompts and post truncation (eliminated +200 buffer)

@@ -181,20 +181,37 @@ async def preview_connector(body: ConnectorPreviewBody, user=Depends(editor)):
 
 @router.post("/sources/connector", status_code=201)
 async def create_connector_source(body: ConnectorBody, user=Depends(editor)):
-    if not await db.fetchone("SELECT 1 FROM projects WHERE id = %s", (body.project_id,)):
+    return await add_connector_source(
+        user, body.project_id, body.type, body.value, body.options.model_dump(),
+        name=body.name, authority=body.authority, poll_minutes=body.poll_minutes, enabled=body.enabled,
+    )
+
+
+async def add_connector_source(
+    user, project_id: int, source_type: str, value: str, options: dict, *,
+    name: str | None = None, authority: float = 0.5, poll_minutes: int = 360, enabled: bool = True,
+) -> dict:
+    """Создаёт источник-коннектор и запускает первый сбор; общий путь для формы источника и автоподбора."""
+    if not await db.fetchone("SELECT 1 FROM projects WHERE id = %s", (project_id,)):
         raise HTTPException(404, "Проект не найден")
     try:
-        prepared = await connectors.prepare(body.type, body.value, body.options.model_dump())
+        prepared = await connectors.prepare(source_type, value, options)
     except Exception as e:
         raise HTTPException(400, str(e))
-    name = (body.name or "").strip() or prepared["name"]
+    duplicate = await db.fetchone(
+        "SELECT name FROM sources WHERE project_id = %s AND type = %s AND (config = %s OR (url <> '' AND url = %s))",
+        (project_id, source_type, Jsonb(prepared["config"]), prepared["url"]),
+    )
+    if duplicate:
+        raise HTTPException(409, f"Такой источник уже подключён: «{duplicate['name']}»")
     row = await db.fetchone(
         "INSERT INTO sources(project_id, type, name, url, config, authority, poll_minutes, enabled) "
         "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-        (body.project_id, body.type, name, prepared["url"], Jsonb(prepared["config"]), body.authority, body.poll_minutes, body.enabled),
+        (project_id, source_type, (name or "").strip() or prepared["name"], prepared["url"], Jsonb(prepared["config"]),
+         authority, poll_minutes, enabled),
     )
     await jobs.enqueue("ingest_source", {"source_id": row["id"]}, dedupe_key=f"ingest:{row['id']}")
-    await audit(user, "create", "source", row["id"], {"type": body.type, "value": body.value})
+    await audit(user, "create", "source", row["id"], {"type": source_type, "value": value})
     return row
 
 

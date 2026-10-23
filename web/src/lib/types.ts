@@ -108,3 +108,12 @@ export interface SystemConfig {
   llm_model_env?: string; embed_model_env?: string; runtime_override?: boolean;
   telegram_token_configured: boolean; allow_private_urls: boolean; retention_days: number; worker_concurrency: number;
 }
+
+export type SuggestionType = "youtube" | "site" | "reddit" | "telegram";
+export interface SourceSuggestion {
+  id: number; type: SuggestionType; value: string; name: string; reason: string; score: number; hits: number; samples: string[]; created_at: string;
+}
+export interface DiscoveryState {
+  run: { status: "queued" | "running" | "done" | "failed"; started_at?: string; finished_at?: string; queries?: string[]; found?: number; error?: string } | null;
+  suggestions: SourceSuggestion[];
+}

@@ -739,12 +739,13 @@ def test_worker_lanes_reserve_ingest_and_generate_slots():
     assert plan_lanes(1) == [(None, None)]
     # при двух воркерах сбор лент получает отдельную полосу и не ждёт обработку проектов
     assert plan_lanes(2) == [(("ingest_source", "enrich_articles"), None), (None, None)]
-    # при трёх и больше — плюс отдельная полоса генерации, общие не берут generate
+    # при трёх и больше — плюс отдельная полоса для долгих задач (генерация и подбор источников), общие их не берут
+    slow = ("generate", "discover_sources")
     lanes = plan_lanes(3)
     assert lanes[0] == (("ingest_source", "enrich_articles"), None)
-    assert lanes[1] == (("generate",), None)
-    assert lanes[2] == (None, ("generate",))
-    assert plan_lanes(5) == [*lanes, (None, ("generate",)), (None, ("generate",))]
+    assert lanes[1] == (slow, None)
+    assert lanes[2] == (None, slow)
+    assert plan_lanes(5) == [*lanes, (None, slow), (None, slow)]
 
 
 def test_parse_topic_aspects_splits_and_dedupes():
