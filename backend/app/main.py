@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from . import db
-from .api import auth, channels, content, plan, projects, schedules, sources, system
+from .api import auth, channels, content, discovery, plan, projects, schedules, sources, system
 from .config import get_settings
 from .events import broker
 from .security import hash_password
@@ -37,5 +37,5 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Pulse API", version="1.0.0", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
-for r in (auth.router, projects.router, sources.router, channels.router, schedules.router, plan.router, content.router, system.router):
+for r in (auth.router, projects.router, sources.router, discovery.router, channels.router, schedules.router, plan.router, content.router, system.router):
     app.include_router(r, prefix="/api")

@@ -1,4 +1,5 @@
-"""Юнит-тесты коннекторов и подборочного (curated) режима: разбор выдачи площадок, оценка и форматы постов. Без БД и сети."""
+"""Юнит-тесты коннекторов, подборочного (curated) режима и автоподбора источников: разбор выдачи площадок, оценка и форматы постов. Без БД и сети."""
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -296,3 +297,92 @@ def test_single_source_curated_post_is_not_blocked_by_citation_coverage():
     news = automatic_review("Как работают индексы", body, citations, checks, 900)
     assert any("Покрытие" in reason for reason in news["reasons"])
 
+
+
+# ---------- автоподбор источников ----------
+def test_parse_discovery_queries():
+    from app.pipeline.discovery import parse_queries
+
+    raw = 'Вот запросы: ["индексы PostgreSQL", "репликация  баз данных", "индексы postgresql", "ab", 42]'
+    assert parse_queries(raw) == ["индексы PostgreSQL", "репликация баз данных"]  # дубль, короткое и число отброшены
+    assert parse_queries("не JSON") == []
+    assert len(parse_queries(json.dumps([f"запрос номер {i}" for i in range(20)]))) == 8
+
+
+def test_collect_groups_search_results_into_source_candidates():
+    from app.pipeline.discovery import collect
+
+    results = {
+        "индексы postgres": [
+            {"url": "https://www.habr.com/ru/articles/1/", "title": "Индексы в PostgreSQL"},
+            {"url": "https://youtu.be/dQw4w9WgXcQ", "title": "Видео про индексы", "meta": {"author": "DB Channel"}},
+            {"url": "https://t.me/dbweekly/120", "title": "Пост про индексы"},
+            {"url": "https://www.reddit.com/r/PostgreSQL/comments/abc/x/", "title": "Обсуждение индексов"},
+            {"url": "https://ru.wikipedia.org/wiki/Индекс", "title": "Индекс — Википедия"},
+            {"url": "https://www.youtube.com/watch?v=aircAruvnKk", "title": "Без автора"},
+        ],
+        "репликация": [
+            {"url": "https://habr.com/ru/articles/2/", "title": "Репликация"},
+            {"url": "https://www.youtube.com/watch?v=fNk_zzaMoSs", "title": "Видео про репликацию - YouTube", "meta": {"author": "db channel"}},
+        ],
+    }
+    found, videos = collect(results)
+    assert set(found) == {("site", "https://habr.com/"), ("telegram", "@dbweekly"), ("reddit", "r/PostgreSQL")}
+    habr = found[("site", "https://habr.com/")]
+    assert habr.hits == 2 and habr.samples == ["Индексы в PostgreSQL", "Репликация"]
+    assert found[("telegram", "@dbweekly")].hits == 1
+    # видео — отдельно и в каноническом виде; канал узнаётся потом через oEmbed, автору из выдачи не доверяем
+    assert videos == [
+        ("индексы postgres", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "Видео про индексы"),
+        ("индексы postgres", "https://www.youtube.com/watch?v=aircAruvnKk", "Без автора"),
+        ("репликация", "https://www.youtube.com/watch?v=fNk_zzaMoSs", "Видео про репликацию"),
+    ]
+
+
+async def test_youtube_channels_group_videos_by_owner(monkeypatch):
+    from app.pipeline import discovery
+
+    owners = {
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ": ("https://www.youtube.com/@db", "DB Channel"),
+        "https://www.youtube.com/watch?v=fNk_zzaMoSs": ("https://www.youtube.com/@db", "DB Channel"),
+        "https://www.youtube.com/watch?v=aircAruvnKk": None,  # oEmbed не ответил — видео пропускаем
+    }
+
+    async def video_channel(url):
+        return owners[url]
+
+    monkeypatch.setattr(discovery, "video_channel", video_channel)
+    [channel] = await discovery._youtube_channels([
+        ("a", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "Первое"),
+        ("b", "https://www.youtube.com/watch?v=fNk_zzaMoSs", "Второе"),
+        ("b", "https://www.youtube.com/watch?v=aircAruvnKk", "Третье"),
+    ])
+    assert (channel.value, channel.name, channel.hits, channel.samples) == ("https://www.youtube.com/@db", "DB Channel", 2, ["Первое", "Второе"])
+
+
+def test_candidate_score_combines_repetition_and_model_rating():
+    from app.pipeline.discovery import Candidate
+
+    c = Candidate("site", "https://habr.com/", "habr.com", queries={"a", "b", "c", "d"})
+    assert c.score == 1.0
+    c.rating = 5
+    assert c.score == pytest.approx(0.4 + 0.3)
+    assert Candidate("site", "x", "x", queries={"a"}).score == pytest.approx(1 / 3, abs=1e-4)
+
+
+def test_parse_discovery_ratings():
+    from app.pipeline.discovery import parse_ratings
+
+    raw = 'Оценки: {"1": {"score": 8, "reason": "Профильный блог"}, "2": 3, "x": {"score": 9}, "3": {"score": "плохо"}}'
+    assert parse_ratings(raw) == {1: (8.0, "Профильный блог"), 2: (3.0, "")}
+    assert parse_ratings("[]") == {}
+
+
+def test_suggestions_are_capped_per_source_type():
+    from app.pipeline.discovery import MAX_PER_TYPE, Candidate, cap_per_type
+
+    channels = [Candidate("youtube", f"https://www.youtube.com/@c{i}", f"c{i}", queries={"q"}) for i in range(25)]
+    sites = [Candidate("site", f"https://s{i}.example/", f"s{i}", queries={"q", "r"}) for i in range(3)]
+    capped = cap_per_type(channels + sites)
+    assert [c.type for c in capped[:3]] == ["site"] * 3  # чаще встречающиеся — первыми
+    assert sum(c.type == "youtube" for c in capped) == MAX_PER_TYPE

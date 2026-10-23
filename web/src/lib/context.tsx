@@ -98,11 +98,12 @@ export function useTheme() {
 
 /* ---------- живые события (SSE) ---------- */
 const EVENT_KEYS: Record<string, string[]> = {
-  generation: ["generation-queue", "dashboard", "drafts"],
-  pipeline: ["dashboard", "clusters", "cluster", "sources"],
-  draft: ["drafts", "draft", "dashboard", "clusters"],
-  publication: ["publications", "dashboard", "drafts", "draft"],
+  generation: ["generation-queue", "dashboard", "drafts", "content-plan"],
+  pipeline: ["dashboard", "clusters", "cluster", "sources", "content-plan"],
+  draft: ["drafts", "draft", "dashboard", "clusters", "content-plan"],
+  publication: ["publications", "dashboard", "drafts", "draft", "content-plan"],
   source: ["sources", "dashboard"],
+  discovery: ["discovery"],
 };
 
 export function useLiveEvents(enabled: boolean): boolean {

@@ -165,7 +165,9 @@ def search_result_to_video(entry: dict) -> dict | None:
 async def fetch(src: dict) -> tuple[list[dict], dict]:
     cfg = src.get("config") or {}
     if cfg.get("kind") == "search":
-        results = await searx.search(cfg["query"], language=src.get("language") or "ru", categories="videos", engines="youtube",
+        # Ролики YouTube находят и движок youtube, и bing/duckduckgo; последние выручают, когда YouTube блокирует SearXNG.
+        # Параметр engines тут не помогает: SearXNG объединяет его с категорией, поэтому лишнее отсекаем по ссылке.
+        results = await searx.search(cfg["query"], language=src.get("language") or "ru", categories="videos",
                                      time_range=cfg.get("time_range") or None)
         return [video for video in map(search_result_to_video, results) if video], {}
     return await ingest.fetch_feed(feed_url(cfg), src.get("etag"), src.get("last_modified"), parser=parse_video_feed)

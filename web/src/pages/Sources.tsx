@@ -7,6 +7,7 @@ import { useAuth, useProject, useToast } from "../lib/context";
 import { ago, fmtNum } from "../lib/format";
 import { CONTENT_KINDS } from "../lib/labels";
 import type { ConnectorPreview, ConnectorType, ContentMode, Source } from "../lib/types";
+import { DiscoveryPanel } from "../components/Discovery";
 import { NoProject } from "../components/NoProject";
 import { Badge, Dialog, Empty, ErrorNote, Field, PageHeader, Spinner, Toggle } from "../components/ui";
 
@@ -179,6 +180,7 @@ export default function Sources() {
           </div>
         )}
       />
+      <DiscoveryPanel projectId={project.id} />
       {q.isLoading && <Spinner />}
       {q.error && <ErrorNote error={q.error} />}
       {q.data && rows.length === 0 && <Empty title="Источников пока нет" text="Добавьте RSS-ленту, YouTube-канал, поисковый запрос или Telegram-канал, либо импортируйте подписки из OPML (Feedly, Inoreader и др.)." />}
