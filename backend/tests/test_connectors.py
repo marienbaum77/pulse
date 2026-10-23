@@ -386,3 +386,11 @@ def test_suggestions_are_capped_per_source_type():
     capped = cap_per_type(channels + sites)
     assert [c.type for c in capped[:3]] == ["site"] * 3  # чаще встречающиеся — первыми
     assert sum(c.type == "youtube" for c in capped) == MAX_PER_TYPE
+
+
+def test_parse_ratings_recovers_entries_from_truncated_json():
+    from app.pipeline.discovery import parse_ratings
+
+    raw = ('{\n  "1": {"score": 9, "reason": "Профильный ресурс по \\"PostgreSQL\\""},\n'
+           '  "2": {"score": 0, "reason": "Магазин"},\n  "3": {"score": 7, "reason": "Активное сообщ')
+    assert parse_ratings(raw) == {1: (9.0, 'Профильный ресурс по \\"PostgreSQL\\"'), 2: (0.0, "Магазин"), 3: (7.0, "")}

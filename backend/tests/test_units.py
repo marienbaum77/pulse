@@ -428,7 +428,7 @@ def test_generated_post_uses_one_clean_headline_and_moves_extra_sentences_to_bod
 
     assert headline == (
         "Nvidia запустила платформу Open Agent Safety Platform для предотвращения атак "
-        "со стороны ИИ-агентов."
+        "со стороны ИИ-агентов"  # заголовок без точки в конце
     )
     assert len(split_sentences(headline)) == 1
     assert "[1]" not in headline and "[2]" not in headline
@@ -1092,3 +1092,33 @@ def test_minhash_empty_and_zero_handling():
     match_id, sim = lsh.query(sig_empty)
     assert match_id is None and sim == 0.0
 
+
+
+def test_generated_headline_drops_trailing_period_but_keeps_ellipsis():
+    assert normalize_generated_post("Apple удалила Telegram из App Store.", "Текст.")[0] == "Apple удалила Telegram из App Store"
+    assert normalize_generated_post("Что дальше...", "Текст.")[0] == "Что дальше..."
+
+
+class _ShortenProvider:
+    supports_chat = True
+
+    def __init__(self, reply):
+        self.reply, self.prompts = reply, []
+
+    async def chat(self, system, user, **kw):
+        self.prompts.append(user)
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+
+async def test_long_post_is_shortened_by_the_model_instead_of_cut():
+    from app.pipeline.generate import shorten_post
+
+    body = "Длинный текст поста. " * 50
+    provider = _ShortenProvider("Заголовок\n\nКороткий текст поста с главным выводом [1].")
+    assert await shorten_post(provider, "system", "Заголовок", body, 900, None) == ("Заголовок", "Короткий текст поста с главным выводом [1].")
+    assert f"В тексте {len(body)} символов, а нужно не больше 900" in provider.prompts[0]
+    # модель недоступна или «сократила» в длинный текст — остаётся исходный вариант, его потом обрежет truncate
+    assert await shorten_post(_ShortenProvider(LLMUnavailable("down")), "s", "Заголовок", body, 900, None) == ("Заголовок", body)
+    assert await shorten_post(_ShortenProvider("З\n\n" + body + "ещё"), "s", "Заголовок", body, 900, None) == ("Заголовок", body)

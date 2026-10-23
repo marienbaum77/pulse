@@ -39,7 +39,10 @@ QUERIES_SYSTEM = """Ты помогаешь редактору тематиче�
 Ответь ТОЛЬКО JSON-массивом строк без пояснений."""
 RATE_SYSTEM = """Ты главный редактор тематического канала. Тематика: {topic}. Ниже кандидаты в источники контента с примерами найденных материалов.
 Оцени каждого по шкале 0–10: насколько регулярно он даёт полезный контент точно по теме канала. Низко — магазины, агрегаторы без своего контента, случайные совпадения, другая тема.
-Ответь ТОЛЬКО JSON-объектом вида {{"1": {{"score": 8, "reason": "одно короткое предложение"}}, "2": ...}}."""
+Ответь ТОЛЬКО JSON-объектом вида {{"1": {{"score": 8, "reason": "обоснование до 12 слов"}}, "2": ...}}."""
+# Русское обоснование в 12 слов — около 40 токенов, плюс разметка JSON. При 60 токенах на кандидата ответ
+# по 30 кандидатам обрывался на середине, и без запаса пропадали все оценки.
+RATE_TOKENS_PER_CANDIDATE = 90
 KIND_LABELS = {"youtube": "YouTube-канал", "site": "сайт", "reddit": "сабреддит", "telegram": "Telegram-канал"}
 _YOUTUBE_SUFFIX = re.compile(r"\s+[-–|]\s*YouTube\s*$")
 
@@ -225,12 +228,16 @@ def cap_per_type(cands: list[Candidate]) -> list[Candidate]:
     return out[:MAX_SUGGESTIONS]
 
 
+_RATING_ENTRY = re.compile(r'"(\d+)"\s*:\s*\{\s*"score"\s*:\s*(\d+(?:\.\d+)?)\s*(?:,\s*"reason"\s*:\s*"((?:[^"\\]|\\.)*)")?')
+
+
 def parse_ratings(raw: str) -> dict[int, tuple[float, str]]:
     match = re.search(r"\{.*\}", raw or "", re.S)
     try:
         data = json.loads(match.group(0)) if match else {}
     except ValueError:
-        return {}
+        # Ответ оборвался по лимиту токенов: забираем целые записи, а не теряем все оценки разом.
+        return {int(n): (max(0.0, min(10.0, float(score))), reason.strip()[:200]) for n, score, reason in _RATING_ENTRY.findall(raw or "")}
     out = {}
     for key, value in data.items() if isinstance(data, dict) else []:
         try:
@@ -249,7 +256,7 @@ async def _rate(project: dict, provider, cands: list[Candidate]) -> None:
     lines = [f"{i}. {KIND_LABELS[c.type]} {c.name}: " + " | ".join(c.samples) for i, c in enumerate(cands, 1)]
     try:
         raw = await provider.chat(RATE_SYSTEM.format(topic=project["topic"] or project["name"]), "\n".join(lines),
-                                  max_tokens=60 * len(cands) + 100, temperature=0.1, project_id=project["id"])
+                                  max_tokens=RATE_TOKENS_PER_CANDIDATE * len(cands) + 200, temperature=0.1, project_id=project["id"])
     except LLMUnavailable as e:
         log.info("discovery rating skipped: %s", e)
         return

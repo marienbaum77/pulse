@@ -72,6 +72,29 @@ FORMAT_TASKS = {
 }
 
 
+async def shorten_post(provider, system: str, title: str, body: str, limit: int, project_id: int | None) -> tuple[str, str]:
+    """Модель регулярно перебирает с длиной на 5–15%, а обрезка срезала бы конец поста — у рекомендации видео это
+    как раз «кому смотреть». Один раз просим сократить; если не вышло, остаётся обрезка по предложению."""
+    target = int(limit * 0.9)
+    try:
+        raw = await provider.chat(
+            system,
+            f"Вот готовый пост:\n\n{title}\n\n{body}\n\nВ тексте {len(body)} символов, а нужно не больше {limit}. "
+            f"Сократи текст до {target} символов: убери второстепенное, сохрани главную мысль, вывод и маркеры [n]. "
+            "Заголовок оставь. Формат ответа тот же: заголовок, пустая строка, текст.",
+            max_tokens=700,
+            temperature=0.2,
+            project_id=project_id,
+        )
+    except LLMUnavailable as e:
+        log.info("post shortening skipped: %s", e)
+        return title, body
+    new_title, new_body = parse_output(raw)
+    if not new_body or len(new_body) >= len(body):
+        return title, body
+    return new_title or title, new_body
+
+
 def content_format(mode: str, kinds: list[str]) -> str:
     """news — сюжет из нескольких источников; для curated формат задаёт главный материал (видео важнее статьи)."""
     if mode != "curated":
@@ -144,6 +167,8 @@ def normalize_generated_post(title: str, body: str, max_headline_chars: int = 12
         return strip_citations(title).strip().strip("*_ \"«»"), body.strip()
 
     headline = strip_citations(original_sentences[0]).strip().strip("*_ \"«»")
+    if headline.endswith(".") and not headline.endswith(".."):
+        headline = headline[:-1]  # заголовок — не предложение: точку в конце не ставят, многоточие оставляем
     title_details = original_sentences[1:]
     if len(headline) > max_headline_chars:
         cut = headline[:max_headline_chars]
@@ -437,6 +462,8 @@ async def generate_for_clusters(project: dict, cluster_ids: list[int], kind: str
                     title, body = "", title
                 if looks_like_source_dump(body, blocks):
                     body = extractive_text(blocks, per_limit)
+            if len(body) > per_limit:
+                title, body = await shorten_post(provider, render_system(project, per_limit, fmt), title, body, per_limit, project["id"])
             if not title:
                 title = (await db.fetchone("SELECT title FROM clusters WHERE id = %s", (cid,)))["title"]
         else:
