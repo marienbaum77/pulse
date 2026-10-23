@@ -11,6 +11,7 @@ import Sources from "./pages/Sources";
 import Channels from "./pages/Channels";
 
 const Trends = React.lazy(() => import("./pages/Trends"));
+const Plan = React.lazy(() => import("./pages/Plan"));
 const ProjectSettings = React.lazy(() => import("./pages/ProjectSettings"));
 const Admin = React.lazy(() => import("./pages/Admin"));
 
@@ -31,6 +32,7 @@ export default function App() {
           <Route index element={<Overview />} />
           <Route path="trends" element={<Trends />} />
           <Route path="drafts/:id?" element={<Drafts />} />
+          <Route path="plan" element={<Plan />} />
           <Route path="publications" element={<Publications />} />
           <Route path="sources" element={<Sources />} />
           <Route path="channels" element={<Channels />} />

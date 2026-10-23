@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarClock, FileText, LayoutDashboard, LogOut, Menu, Moon, Rss, Send, Settings2, SlidersHorizontal, Sun, TrendingUp } from "lucide-react";
+import { CalendarClock, CalendarDays, FileText, LayoutDashboard, LogOut, Menu, Moon, Rss, Send, Settings2, SlidersHorizontal, Sun, TrendingUp } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuth, useLiveEvents, useProject, useTheme } from "../lib/context";
 import type { DraftListItem } from "../lib/types";
@@ -26,6 +26,7 @@ export function Layout() {
     { to: "/", label: "Обзор", icon: LayoutDashboard, end: true },
     { to: "/trends", label: "Сюжеты", icon: TrendingUp },
     { to: "/drafts", label: "Черновики", icon: FileText, badge: nPending },
+    { to: "/plan", label: "Контент-план", icon: CalendarDays },
     { to: "/publications", label: "Публикации", icon: Send },
     { to: "/sources", label: "Источники", icon: Rss },
     { to: "/channels", label: "Каналы и расписание", icon: CalendarClock },

@@ -1,4 +1,4 @@
-import type { ClusterState, ContentKind, ContentProfile, DraftStatus, PubStatus } from "./types";
+import type { ClusterState, ContentKind, ContentProfile, DraftStatus, PubStatus, SlotKind } from "./types";
 
 export const SCORE_LABELS: Record<string, string> = {
   topic_fit: "Близость заголовка к теме",
@@ -28,6 +28,9 @@ export const BREAKDOWN_HINTS: Record<string, string> = {
 };
 
 export const CONTENT_KINDS: Record<ContentKind, string> = { article: "статья", video: "видео", post: "пост" };
+/** Что может брать слот контент-плана: новостной сюжет или подборочный материал определённого вида. */
+export const SLOT_KINDS: Record<SlotKind, string> = { news: "новости", video: "видео", article: "статьи", post: "посты" };
+export const LEAD_OPTIONS = [[0, "в момент слота"], [30, "за 30 минут"], [60, "за час"], [180, "за 3 часа"], [720, "за 12 часов"], [1440, "за сутки"]] as const;
 export const CONTENT_PROFILES: Record<ContentProfile, { label: string; hint: string }> = {
   news: {
     label: "Новостной канал",

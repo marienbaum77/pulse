@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Post formats by material: video recommendation, article breakdown, post retelling; digests of curated items are titled «Подборка»
 - `content_seen` memory so curated links removed by retention are not re-added by search
 - `SEARXNG_URL`, `SEARXNG_SECRET`, `YOUTUBE_PROXY_URL` settings
+- Content plan: schedule slots filtered by material kind (news/video/article/post), drafts prepared ahead of the slot (`lead_minutes`) and published at the slot time, per-project source cooldown, and a «Контент-план» page with upcoming slots, their drafts, candidate counts and past outcomes
 
 - Publication channels: VK (wall) and Discord (webhook embeds)
 - Stage-1 lexical dedup via MinHash/LSH before embeddings (MINHASH_DEDUP_ENABLED, MINHASH_THRESHOLD)
@@ -31,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow supports manual trigger via workflow_dispatch in addition to version tags
 
 ### Fixed
+
+- File import (`/items/import`) now follows the project's channel type instead of always adding news items
 
 - Telegram photo publishing: check visible length after HTML parsing so posts with citations send as native sendPhoto rather than falling back to text preview links
 - Post generation length: strictly enforce max_length in LLM prompts and post truncation (eliminated +200 buffer)

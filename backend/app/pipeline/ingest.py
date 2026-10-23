@@ -421,6 +421,8 @@ async def import_manual(project_id: int, items: list[dict]) -> int:
         per_source.setdefault(name, []).append({"title": it["title"], "text": it.get("text", ""), "url": it.get("url", ""), "published_at": ts, "image_url": it.get("image_url")})
     inserted = 0
     updated = False
+    project = await db.fetchone("SELECT content_profile FROM projects WHERE id = %s", (project_id,))
+    mode = connectors.item_mode(project["content_profile"] if project else "news", "manual", {})
     for name, batch in per_source.items():
         row = await db.fetchone("SELECT id FROM sources WHERE project_id = %s AND type = 'manual' AND name = %s", (project_id, name))
         if not row:
@@ -428,7 +430,7 @@ async def import_manual(project_id: int, items: list[dict]) -> int:
                 "INSERT INTO sources(project_id, type, name, authority, enabled) VALUES (%s, 'manual', %s, %s, false) RETURNING id",
                 (project_id, name, authority[name]),
             )
-        stats = await insert_items(project_id, row["id"], batch)
+        stats = await insert_items(project_id, row["id"], batch, mode=mode)
         inserted += stats.inserted
         updated = updated or bool(stats.updated)
     if inserted or updated:

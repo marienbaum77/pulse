@@ -36,17 +36,28 @@ async def fire_schedules(now: datetime) -> int:
     fired = 0
     rows = await db.fetchall("SELECT s.* FROM schedules s JOIN projects p ON p.id = s.project_id WHERE s.enabled AND p.active")
     for s in rows:
+        # Слот с заблаговременной подготовкой срабатывает за lead_minutes до своего времени: черновик успевают проверить,
+        # а публикация всё равно уйдёт ко времени слота (drafts.scheduled_for).
+        horizon = now + timedelta(minutes=s["lead_minutes"])
         try:
-            prev = last_fire(s["cron"], s["tz"], now)
+            slot = last_fire(s["cron"], s["tz"], horizon)
         except Exception:
             log.warning("bad schedule %s", s["id"])
             continue
-        if now - prev > GRACE:
+        if horizon - slot > GRACE:
             continue
         # UNIQUE (schedule_id, fire_time): даже при двух воркерах запуск произойдёт один раз
-        ins = await db.fetchone("INSERT INTO schedule_fires(schedule_id, fire_time) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING fire_time", (s["id"], prev))
+        ins = await db.fetchone(
+            "INSERT INTO schedule_fires(schedule_id, fire_time, slot_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING RETURNING fire_time",
+            (s["id"], slot, slot),
+        )
         if ins:
-            await jobs.enqueue("generate", {"project_id": s["project_id"], "kind": s["kind"], "top_n": s["top_n"], "scheduled": True, "schedule_id": s["id"]}, dedupe_key=f"schedule:{s['id']}")
+            await jobs.enqueue(
+                "generate",
+                {"project_id": s["project_id"], "kind": s["kind"], "top_n": s["top_n"], "scheduled": True, "schedule_id": s["id"],
+                 "slot_at": slot.isoformat(), "content_kinds": list(s["content_kinds"])},
+                dedupe_key=f"schedule:{s['id']}",
+            )
             await db.execute("UPDATE schedules SET last_fired_at = now() WHERE id = %s", (s["id"],))
             fired += 1
     return fired

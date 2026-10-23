@@ -22,6 +22,14 @@ class ScheduleBody(BaseModel):
     kind: Literal["post", "digest"] = "digest"
     top_n: int = Field(5, ge=1, le=10)
     enabled: bool = True
+    # Пусто — любой материал; иначе только эти виды: news (новостной сюжет), video, article, post.
+    content_kinds: list[Literal["news", "video", "article", "post"]] = Field(default_factory=list)
+    lead_minutes: int = Field(0, ge=0, le=1440)
+
+    @field_validator("content_kinds")
+    @classmethod
+    def _kinds(cls, v):
+        return list(dict.fromkeys(v))
 
     @field_validator("cron")
     @classmethod
@@ -89,6 +97,7 @@ async def run_schedule(sid: int, user=Depends(editor)):
             "project_id": s["project_id"],
             "kind": s["kind"],
             "top_n": s["top_n"],
+            "content_kinds": list(s["content_kinds"]),
             "user_id": user["id"],
         },
     )

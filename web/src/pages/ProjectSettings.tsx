@@ -12,7 +12,7 @@ const BLANK: ProjectInput = {
   generation_mode: "llm", publish_mode: "review", window_hours: 48, sim_threshold: 0.72, topic_threshold: 0.4,
   weights: { coverage: 0.15, authority: 0.075, freshness: 0.1, velocity: 0.075, topic_fit: 0.6 },
   context_items: 6, context_sentences: 3, min_items: 2, auto_retry_unknown: false, show_sources: true, active: true,
-  content_profile: "news", curated_window_hours: 336,
+  content_profile: "news", curated_window_hours: 336, source_cooldown_hours: 0,
 };
 const toInput = (p: Project): ProjectInput => { const { id: _id, prompt_version: _v, ...rest } = p; return rest; };
 
@@ -162,6 +162,9 @@ export default function ProjectSettings() {
               <option value="auto">Полуавтоматически (проверка перед публикацией, сомнительное — редактору)</option>
               <option value="full_auto">Автопубликация (кроме критических проблем качества)</option>
             </select>
+          </Field>
+          <Field label="Пауза между постами из одного источника, часов" hint="0 — без ограничений. Например, 12: если YouTube-канал выложил пять видео сразу, в канал попадёт одно, следующее — не раньше чем через 12 часов, а слоты займут другие источники.">
+            <input className="field num max-w-[160px]" type="number" min={0} max={168} value={f.source_cooldown_hours} onChange={(e) => set("source_cooldown_hours", Math.max(0, Math.min(168, Number(e.target.value) || 0)))} disabled={ro} />
           </Field>
           <div>
             <Toggle checked={f.auto_retry_unknown} onChange={(v) => set("auto_retry_unknown", v)} label="Повторять отправку при неизвестном исходе" />
