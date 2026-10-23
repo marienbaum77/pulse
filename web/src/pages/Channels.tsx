@@ -1,11 +1,12 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Play, Plus, Send, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuth, useProject, useToast } from "../lib/context";
 import { dateTime } from "../lib/format";
-import { CHANNEL_TYPES } from "../lib/labels";
-import type { Channel, Schedule } from "../lib/types";
+import { CHANNEL_TYPES, LEAD_OPTIONS, SLOT_KINDS } from "../lib/labels";
+import type { Channel, Schedule, SlotKind } from "../lib/types";
 import { NoProject } from "../components/NoProject";
 import { Badge, Dialog, ErrorNote, Field, PageHeader, Spinner, Toggle } from "../components/ui";
 
@@ -37,8 +38,8 @@ const BLANK_CH: ChForm = {
   enabled: true,
 };
 
-interface ScForm { id?: number; name: string; cron: string; tz: string; kind: "post" | "digest"; top_n: number; enabled: boolean }
-const BLANK_SC: ScForm = { name: "", cron: "0 9 * * *", tz: "Europe/Moscow", kind: "digest", top_n: 5, enabled: true };
+interface ScForm { id?: number; name: string; cron: string; tz: string; kind: "post" | "digest"; top_n: number; enabled: boolean; content_kinds: SlotKind[]; lead_minutes: number }
+const BLANK_SC: ScForm = { name: "", cron: "0 9 * * *", tz: "Europe/Moscow", kind: "digest", top_n: 5, enabled: true, content_kinds: [], lead_minutes: 0 };
 const PRESETS = [
   ["0 9 * * *", "Каждый день в 09:00"],
   ["0 9 * * 1-5", "По будням в 09:00"],
@@ -89,7 +90,7 @@ export default function Channels() {
   });
   const saveSc = useMutation({
     mutationFn: (f: ScForm) => {
-      const body = { project_id: pid, name: f.name, cron: f.cron, tz: f.tz, kind: f.kind, top_n: f.top_n, enabled: f.enabled };
+      const body = { project_id: pid, name: f.name, cron: f.cron, tz: f.tz, kind: f.kind, top_n: f.top_n, enabled: f.enabled, content_kinds: f.content_kinds, lead_minutes: f.lead_minutes };
       return f.id ? api(`/schedules/${f.id}`, { method: "PUT", body }) : api("/schedules", { method: "POST", body });
     },
     onSuccess: () => { toast("Расписание сохранено"); setSc(null); qc.invalidateQueries({ queryKey: ["schedules"] }); qc.invalidateQueries({ queryKey: ["dashboard"] }); },
@@ -187,7 +188,7 @@ export default function Channels() {
           <h2 className="text-xl font-semibold">Расписание</h2>
           {can("editor") && <button className="btn btn-primary btn-sm" onClick={() => setSc(BLANK_SC)}><Plus size={15} />Добавить запуск</button>}
         </div>
-        <p className="hint mb-2 max-w-[70ch]">Каждое срабатывание запускает ровно это расписание: дайджест из выбранного числа сюжетов или указанное число отдельных постов. Режим публикации проекта определяет, останутся ли они на проверке или будут отправлены автоматически.</p>
+        <p className="hint mb-2 max-w-[70ch]">Каждое расписание — слот <Link to="/plan" className="underline underline-offset-4">контент-плана</Link>: дайджест из выбранного числа сюжетов или указанное число отдельных постов, при желании только нужного вида (например, «видео в 10:00», «статья в 14:00»). Режим публикации проекта определяет, останутся ли они на проверке или будут отправлены автоматически.</p>
         {schedules.isLoading && <Spinner />}
         {schedules.data?.length === 0 && <p className="text-muted py-5">Расписаний нет — черновики создаются только вручную.</p>}
         <ul>
@@ -197,6 +198,8 @@ export default function Channels() {
                 <span className="font-serif text-[17px] font-medium">{s.name}</span>
                 <div className="flex flex-wrap items-center gap-x-4 text-[13px] text-muted">
                   <span>{s.kind === "digest" ? `дайджест из ${s.top_n} сюжетов` : `${s.top_n} отдельных постов`}</span>
+                  {s.content_kinds.length > 0 && <span>только {s.content_kinds.map((k) => SLOT_KINDS[k]).join(", ")}</span>}
+                  {s.lead_minutes > 0 && <span>готовить {LEAD_OPTIONS.find((o) => o[0] === s.lead_minutes)?.[1] ?? `за ${s.lead_minutes} мин`}</span>}
                   <code className="text-[12.5px]">{s.cron}</code><span>{s.tz}</span>
                   {s.enabled ? <span>следующий запуск: {dateTime(s.next_fire)}</span> : <Badge tone="muted">Выключено</Badge>}
                 </div>
@@ -204,7 +207,7 @@ export default function Channels() {
               {can("editor") && (
                 <div className="flex gap-1.5">
                   <button className="btn btn-sm" onClick={() => runSc.mutate(s.id)} disabled={runSc.isPending}><Play size={14} />Запустить сейчас</button>
-                  <button className="btn btn-sm btn-ghost" aria-label="Изменить" onClick={() => setSc({ id: s.id, name: s.name, cron: s.cron, tz: s.tz, kind: s.kind, top_n: s.top_n, enabled: s.enabled })}><Pencil size={15} /></button>
+                  <button className="btn btn-sm btn-ghost" aria-label="Изменить" onClick={() => setSc({ id: s.id, name: s.name, cron: s.cron, tz: s.tz, kind: s.kind, top_n: s.top_n, enabled: s.enabled, content_kinds: s.content_kinds, lead_minutes: s.lead_minutes })}><Pencil size={15} /></button>
                   <button className="btn btn-sm btn-ghost btn-danger" aria-label="Удалить" onClick={() => confirm(`Удалить расписание «${s.name}»?`) && delSc.mutate(s.id)}><Trash2 size={15} /></button>
                 </div>
               )}
@@ -298,6 +301,24 @@ export default function Channels() {
               </Field>
               <Field label="Сколько сюжетов"><input className="field num" type="number" min={1} max={10} value={sc.top_n} onChange={(e) => patchSc({ top_n: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} /></Field>
             </div>
+            <Field label="Что публиковать" hint="Ничего не отмечено — любой материал. Отметьте, чтобы слот брал только нужный вид: так собирается план вроде «1 видео и 2 статьи в день».">
+              <div className="flex flex-wrap gap-x-5 gap-y-2">
+                {(Object.keys(SLOT_KINDS) as SlotKind[]).map((k) => (
+                  <label key={k} className="inline-flex items-center gap-2 text-[14px]">
+                    <input
+                      type="checkbox" className="accent-[var(--brand)]" checked={sc.content_kinds.includes(k)}
+                      onChange={(e) => patchSc({ content_kinds: e.target.checked ? [...sc.content_kinds, k] : sc.content_kinds.filter((x) => x !== k) })}
+                    />
+                    {SLOT_KINDS[k]}
+                  </label>
+                ))}
+              </div>
+            </Field>
+            <Field label="Когда готовить черновик" hint="Заранее — чтобы редактор успел проверить пост. Публикация всё равно уйдёт ко времени слота; утверждённый после слота пост уходит сразу.">
+              <select className="field max-w-[240px]" value={sc.lead_minutes} onChange={(e) => patchSc({ lead_minutes: Number(e.target.value) })}>
+                {LEAD_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </Field>
             <Toggle checked={sc.enabled} onChange={(v) => patchSc({ enabled: v })} label="Расписание включено" />
           </>
         )}

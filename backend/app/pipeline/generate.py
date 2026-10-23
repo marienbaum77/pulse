@@ -2,7 +2,7 @@
 import logging
 import re
 import unicodedata
-from datetime import date
+from datetime import date, datetime
 
 from langdetect import DetectorFactory, LangDetectException, detect_langs
 from psycopg.types.json import Jsonb
@@ -14,7 +14,7 @@ from ..textutil import split_sentences, strip_citations, strip_source_footer, tr
 from . import drafts_service
 from .context import Block, build_blocks
 from .ingest import MIN_RSS_TEXT_CHARS, NEEDS_CONTENT_SQL
-from .process import get_project, refresh_clusters, select_clusters
+from .process import diversify, get_project, refresh_clusters, select_clusters
 
 log = logging.getLogger("pulse.generate")
 ENRICH_WAIT_SECONDS = 60
@@ -504,14 +504,17 @@ async def _create_and_fill(
     created_by: int | None,
     prev_states: dict,
     force_review: bool = False,
+    slot: tuple[int, datetime] | None = None,
 ) -> int:
     initial_title = await db.fetchone(
         "SELECT string_agg(title, ' · ' ORDER BY score DESC NULLS LAST, id) AS title FROM clusters WHERE id = ANY(%s)",
         (ids,),
     )
     row = await db.fetchone(
-        "INSERT INTO drafts(project_id, kind, cluster_ids, title, status, created_by) VALUES (%s,%s,%s,%s,'generating',%s) RETURNING id",
-        (project["id"], kind, ids, initial_title["title"] or ("Сборка дайджеста" if kind == "digest" else "Подготовка поста"), created_by),
+        "INSERT INTO drafts(project_id, kind, cluster_ids, title, status, created_by, schedule_id, scheduled_for) "
+        "VALUES (%s,%s,%s,%s,'generating',%s,%s,%s) RETURNING id",
+        (project["id"], kind, ids, initial_title["title"] or ("Сборка дайджеста" if kind == "digest" else "Подготовка поста"), created_by,
+         slot[0] if slot else None, slot[1] if slot else None),
     )
     draft_id = row["id"]
     await events.notify("draft", draft_id=draft_id, status="generating", project_id=project["id"])
@@ -587,12 +590,12 @@ async def run_generation(payload: dict) -> list[int]:
                 await refresh_clusters(project)
         top_n = int(payload.get("top_n", 1))
         pool_size = max(top_n * 3, 10)
-        candidates = await select_clusters(project, pool_size)
+        candidates = await select_clusters(project, pool_size, payload.get("content_kinds"))
+        cooldown = bool(project["source_cooldown_hours"])
         if getattr(provider, "supports_chat", False) and candidates:
             from . import interest as interest_mod
-            candidates = await interest_mod.rank_by_interest(project, provider, candidates, top_n)
-        else:
-            candidates = candidates[:top_n]
+            candidates = await interest_mod.rank_by_interest(project, provider, candidates, len(candidates) if cooldown else top_n)
+        candidates = (diversify(candidates) if cooldown else candidates)[:top_n]
         ids = [c["id"] for c in candidates]
     if not ids:
         await events.notify("pipeline", project_id=project["id"], stage="nothing_to_publish")
@@ -625,6 +628,7 @@ async def run_generation(payload: dict) -> list[int]:
     if not claimed:
         return []
     groups = [claimed] if kind == "digest" else [[i] for i in claimed]
+    slot = _slot(payload)
     out = []
     for g in groups:
         out.append(
@@ -636,14 +640,38 @@ async def run_generation(payload: dict) -> list[int]:
                 payload.get("user_id"),
                 prev,
                 force_review=bool(payload.get("force_review")),
+                slot=slot,
             )
         )
     return out
 
 
+def _slot(payload: dict) -> tuple[int, datetime] | None:
+    """Слот контент-плана из задачи расписания: черновик публикуется не раньше этого времени."""
+    if payload.get("schedule_id") and payload.get("slot_at"):
+        return int(payload["schedule_id"]), datetime.fromisoformat(payload["slot_at"])
+    return None
+
+
+async def _record_fire(payload: dict, draft_ids: list[int], outcome: str) -> None:
+    slot = _slot(payload)
+    if slot:
+        await db.execute(
+            "UPDATE schedule_fires SET outcome = %s, draft_ids = %s WHERE schedule_id = %s AND fire_time = %s",
+            (outcome, draft_ids, *slot),
+        )
+
+
 @jobs.handler("generate")
 async def generate_job(payload: dict) -> None:
-    await run_generation(payload)
+    try:
+        ids = await run_generation(payload)
+    except jobs.Retry:
+        raise
+    except Exception:
+        await _record_fire(payload, [], "failed")
+        raise
+    await _record_fire(payload, ids, "drafted" if ids else "empty")
 
 
 async def recover_stuck_generations(timeout_minutes: int = 15) -> int:

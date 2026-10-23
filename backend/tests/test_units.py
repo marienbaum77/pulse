@@ -381,7 +381,7 @@ async def test_manual_schedule_run_does_not_force_editor_review(monkeypatch):
     captured = {}
 
     async def get_schedule(_sql, _params):
-        return {"project_id": 7, "kind": "post", "top_n": 1}
+        return {"project_id": 7, "kind": "post", "top_n": 1, "content_kinds": ["video"]}
 
     async def enqueue(_kind, payload):
         captured.update(payload)
@@ -392,7 +392,7 @@ async def test_manual_schedule_run_does_not_force_editor_review(monkeypatch):
     result = await schedules.run_schedule(9, {"id": 1})
 
     assert result == {"job_id": 123}
-    assert captured == {"project_id": 7, "kind": "post", "top_n": 1, "user_id": 1}
+    assert captured == {"project_id": 7, "kind": "post", "top_n": 1, "content_kinds": ["video"], "user_id": 1}
 
 
 def test_gate_auto_publish_modes():

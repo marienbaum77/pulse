@@ -43,7 +43,7 @@ async def approve(draft_id: int, user_id: int | None, channel_ids: list[int] | N
     """True — черновик утверждён сейчас; False — он уже не в статусе pending_review."""
     async with db.pool.connection() as conn:
         async with conn.transaction():
-            cur = await conn.execute("SELECT project_id, status FROM drafts WHERE id = %s FOR UPDATE", (draft_id,))
+            cur = await conn.execute("SELECT project_id, status, scheduled_for FROM drafts WHERE id = %s FOR UPDATE", (draft_id,))
             d = await cur.fetchone()
             if d is None or d["status"] != "pending_review":
                 return False
@@ -80,10 +80,11 @@ async def approve(draft_id: int, user_id: int | None, channel_ids: list[int] | N
                         (draft_id, ch["id"]),
                     )
                 else:
+                    # Черновик слота контент-плана уходит ко времени слота; утверждённый позже — сразу.
                     await conn.execute(
-                        "INSERT INTO publications(draft_id, channel_id) VALUES (%s, %s) "
+                        "INSERT INTO publications(draft_id, channel_id, due_at) VALUES (%s, %s, GREATEST(now(), %s)) "
                         "ON CONFLICT (draft_id, channel_id) DO NOTHING",
-                        (draft_id, ch["id"]),
+                        (draft_id, ch["id"], d["scheduled_for"]),
                     )
     await events.notify("draft", draft_id=draft_id, status="approved", project_id=d["project_id"])
     return True

@@ -524,11 +524,32 @@ async def refresh_clusters(project: dict) -> int:
     return len(rows)
 
 
-async def select_clusters(project: dict, limit: int) -> list[dict]:
+# Вид сюжета для контент-плана: новостной сюжет — news, подборочный — вид главного материала (видео важнее статьи,
+# как и при выборе формата поста).
+CLUSTER_KIND_SQL = (
+    "CASE WHEN c.mode = 'news' THEN 'news' ELSE COALESCE((SELECT i.kind FROM items i WHERE i.cluster_id = c.id AND i.status = 'clustered' "
+    "ORDER BY array_position(ARRAY['video','article','post'], i.kind), i.id LIMIT 1), 'article') END"
+)
+CONTENT_KINDS = ("news", "video", "article", "post")
+# Источники, из которых недавно уже сделан пост (черновик в работе, на проверке или утверждён).
+_RECENT_SOURCES_SQL = (
+    "SELECT i2.source_id FROM drafts d JOIN items i2 ON i2.cluster_id = ANY(d.cluster_ids) "
+    "WHERE d.project_id = c.project_id AND d.status IN ('generating','pending_review','approved') "
+    "AND d.created_at > now() - make_interval(hours => %s) AND i2.source_id IS NOT NULL"
+)
+
+
+async def select_clusters(project: dict, limit: int, kinds: list[str] | None = None) -> list[dict]:
     """Кандидаты на публикацию: открытые новостные сюжеты с достаточным числом материалов, уже опубликованные,
-    которые заметно выросли (для поста-обновления), и открытые curated-материалы — им второй источник не нужен."""
+    которые заметно выросли (для поста-обновления), и открытые curated-материалы — им второй источник не нужен.
+    kinds ограничивает вид материала (слот контент-плана «только видео»), а source_cooldown_hours проекта
+    отсекает сюжеты, все источники которых уже дали пост за последние часы."""
+    kinds = [k for k in (kinds or []) if k in CONTENT_KINDS]
+    cooldown = int(project.get("source_cooldown_hours") or 0)
     return await db.fetchall(
-        "SELECT c.id, c.title, c.score, c.item_count, c.source_count, c.state, c.mode FROM clusters c "
+        f"SELECT c.id, c.title, c.score, c.item_count, c.source_count, c.state, c.mode, {CLUSTER_KIND_SQL} AS kind, "
+        "ARRAY(SELECT DISTINCT i.source_id FROM items i WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate') "
+        "AND i.source_id IS NOT NULL) AS source_ids FROM clusters c "
         f"WHERE c.project_id = %s AND c.score IS NOT NULL AND c.last_seen >= now() - {MODE_WINDOW_SQL} AND ("
         "  (c.mode = 'curated' AND c.state = 'open') OR "
         "  (c.mode = 'news' AND c.state = 'open' AND c.item_count >= %s) OR "
@@ -536,9 +557,27 @@ async def select_clusters(project: dict, limit: int) -> list[dict]:
         "   AND c.item_count - COALESCE(c.item_count_at_publish, 0) >= 3)"
         ") AND (%s <= 0 OR COALESCE((c.score_breakdown->'topic_fit'->>'neutral')::boolean, false) "
         "OR COALESCE((c.score_breakdown->'topic_fit'->>'value')::float, 0.5) >= %s) "
+        f"AND (cardinality(%s::text[]) = 0 OR {CLUSTER_KIND_SQL} = ANY(%s::text[])) "
+        "AND (%s <= 0 OR EXISTS (SELECT 1 FROM items i WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate') "
+        f"AND (i.source_id IS NULL OR i.source_id NOT IN ({_RECENT_SOURCES_SQL})))) "
         "ORDER BY COALESCE((c.score_breakdown->'topic_fit'->>'value')::float, 0.5) DESC, c.score DESC, c.id LIMIT %s",
-        (project["id"], *_windows(project), project["min_items"], project["topic_threshold"], project["topic_threshold"], limit),
+        (project["id"], *_windows(project), project["min_items"], project["topic_threshold"], project["topic_threshold"],
+         kinds, kinds, cooldown, cooldown, limit),
     )
+
+
+def diversify(candidates: list[dict]) -> list[dict]:
+    """Из уже упорядоченных кандидатов оставляет по одному на источник: при кулдауне два поста из одного
+    YouTube-канала за один запуск расписания — то же, что и подряд."""
+    used: set[int] = set()
+    out = []
+    for c in candidates:
+        sources = set(c.get("source_ids") or [])
+        if sources and sources <= used:
+            continue
+        used |= sources
+        out.append(c)
+    return out
 
 
 async def clear_clusters(project_id: int) -> tuple[int, int]:

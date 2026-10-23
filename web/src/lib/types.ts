@@ -6,7 +6,7 @@ export interface Project {
   prompt_template: string; prompt_version: number; generation_mode: "llm" | "extractive" | "auto"; publish_mode: "review" | "auto" | "full_auto";
   window_hours: number; sim_threshold: number; topic_threshold: number; weights: Record<string, number>;
   context_items: number; context_sentences: number; min_items: number; auto_retry_unknown: boolean; show_sources: boolean; active: boolean;
-  content_profile: ContentProfile; curated_window_hours: number;
+  content_profile: ContentProfile; curated_window_hours: number; source_cooldown_hours: number;
 }
 export type ContentProfile = "news" | "curated" | "mixed";
 export type ContentMode = "news" | "curated";
@@ -74,9 +74,18 @@ export interface Channel {
   id: number; project_id: number; type: "telegram" | "webhook" | "console" | "vk" | "discord"; name: string; config: Record<string, string>;
   enabled: boolean; has_secret: boolean;
 }
+export type SlotKind = "news" | ContentKind;
 export interface Schedule {
   id: number; project_id: number; name: string; cron: string; tz: string; kind: "post" | "digest"; top_n: number;
-  enabled: boolean; last_fired_at: string | null; next_fire: string | null;
+  enabled: boolean; last_fired_at: string | null; next_fire: string | null; content_kinds: SlotKind[]; lead_minutes: number;
+}
+export interface PlanSlot {
+  schedule_id: number; schedule_name: string; at: string; prepare_at: string; kind: "post" | "digest"; top_n: number;
+  content_kinds: SlotKind[]; lead_minutes: number; outcome: "queued" | "drafted" | "empty" | "failed" | null; candidates: number;
+  drafts: { id: number; title: string; status: DraftStatus; kind: "post" | "digest"; publications: { status: PubStatus; sent_at: string | null }[] }[];
+}
+export interface ContentPlan {
+  now: string; slots: PlanSlot[]; backlog: { id: number; title: string; kind: "post" | "digest"; created_at: string }[];
 }
 
 export interface Dashboard {
