@@ -14,6 +14,9 @@ from .clustering_core import unit_vector
 
 log = logging.getLogger("pulse.context")
 MAX_CONTEXT_CHARS = 7000
+# Пост о видео или статье пишется по одному материалу — ему нужен не «ядро сюжета» из трёх фраз, а заметная часть текста.
+CURATED_CONTEXT_SENTENCES = 24
+CURATED_SCAN_SENTENCES = 120
 
 
 @dataclass
@@ -28,6 +31,8 @@ class Block:
     article_content_status: str = "pending"
     content_length: int = 0
     image_url: str | None = None
+    kind: str = "article"
+
     @property
     def text(self) -> str:
         return " ".join(self.sentences)
@@ -46,9 +51,9 @@ class Block:
 
 
 async def build_blocks(project: dict, cluster_id: int, start_n: int, provider) -> list[Block]:
-    cluster = await db.fetchone("SELECT centroid FROM clusters WHERE id = %s", (cluster_id,))
+    cluster = await db.fetchone("SELECT centroid, mode FROM clusters WHERE id = %s", (cluster_id,))
     rows = await db.fetchall(
-        "SELECT i.id, i.source_id, i.title, i.url, i.text, i.published_at, i.embedding, "
+        "SELECT i.id, i.source_id, i.title, i.url, i.text, i.published_at, i.embedding, i.kind, "
         "i.article_content_status, char_length(btrim(i.text)) AS content_length, i.image_url, "
         "COALESCE(NULLIF(i.publisher_name, ''), s.name, 'Источник') AS source_name, COALESCE(s.authority, 0.5) AS authority "
         "FROM items i LEFT JOIN sources s ON s.id = i.source_id WHERE i.cluster_id = %s AND i.status = 'clustered'",
@@ -68,11 +73,12 @@ async def build_blocks(project: dict, cluster_id: int, start_n: int, provider) -
         chosen.append(r)
         per_source[r["source_id"]] += 1
 
-    k = max(1, project["context_sentences"])
+    curated = cluster["mode"] == "curated"
+    k = CURATED_CONTEXT_SENTENCES if curated else max(1, project["context_sentences"])
     per_item = []
     pool_sentences: list[str] = []
     for r in chosen:
-        sents = split_sentences(r["text"])[:14] or [r["title"]]
+        sents = split_sentences(r["text"])[: CURATED_SCAN_SENTENCES if curated else 14] or [r["title"]]
         rest = sents[1:] if len(sents) > k else []
         per_item.append((sents, rest))
         pool_sentences.extend(rest)
@@ -107,6 +113,7 @@ async def build_blocks(project: dict, cluster_id: int, start_n: int, provider) -
                 r["article_content_status"],
                 r["content_length"],
                 r["image_url"],
+                r["kind"],
             )
         )
     return blocks

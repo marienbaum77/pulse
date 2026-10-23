@@ -5,7 +5,7 @@ import { ExternalLink, RotateCcw, Search, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuth, useProject, useToast } from "../lib/context";
 import { ago, dateTime, plural } from "../lib/format";
-import { CLUSTER_STATE, DRAFT_STATUS } from "../lib/labels";
+import { CLUSTER_STATE, CONTENT_KINDS, DRAFT_STATUS } from "../lib/labels";
 import type { Cluster, ClusterDetail } from "../lib/types";
 import { ArrivalStrip, Breakdown, Score } from "../components/charts";
 import { Thumb } from "../components/Thumb";
@@ -52,7 +52,8 @@ export default function Trends() {
   const tabDef = TABS.find((t) => t.id === tab)!;
 
   // Базовые предикаты видимости
-  const isSingle = (c: Cluster) => c.item_count < project.min_items;
+  // Подборочному материалу (видео, статья) второй источник не нужен — он не «одиночка», а полноценный кандидат.
+  const isSingle = (c: Cluster) => c.mode !== "curated" && c.item_count < project.min_items;
   const visible = (c: Cluster) => singles || !isSingle(c);
   const belowTopicThreshold = (c: Cluster) => {
     const fit = c.score_breakdown?.topic_fit;
@@ -300,6 +301,7 @@ export default function Trends() {
                 <span className="min-w-0 flex-1">
                   <span className="block font-serif text-[17px] font-medium leading-snug">{c.title || "Без названия"}</span>
                   <span className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] text-muted mt-0.5">
+                    {c.mode === "curated" && <span className="eyebrow">{CONTENT_KINDS[c.kind ?? "article"]}</span>}
                     <span>{c.item_count} {plural(c.item_count, "материал", "материала", "материалов")}</span>
                     <span>{c.source_count} {plural(c.source_count, "источник", "источника", "источников")}</span>
                     <span>{ago(c.last_seen)}</span>

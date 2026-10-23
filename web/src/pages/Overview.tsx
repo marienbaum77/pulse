@@ -56,8 +56,8 @@ export default function Overview() {
       {q.error && <ErrorNote error={q.error} />}
       {d && d.pipeline.rss_enabled === 0 && (
         <div className="mb-7 px-4 py-3.5 text-[14px] leading-relaxed max-w-[76ch]" style={{ border: "1px solid var(--info)", borderRadius: 3 }}>
-          <b>Новые материалы не поступают: не подключён ни один RSS-источник.</b> Pulse сам ничего не ищет в интернете — он читает ленты, которые вы добавили.
-          Добавьте ленту или импортируйте OPML на странице <Link to="/sources" className="underline underline-offset-4">«Источники»</Link>.
+          <b>Новые материалы не поступают: не подключён ни один источник.</b> Pulse собирает материалы только из источников, которые вы добавили:
+          RSS-лент, YouTube-каналов, поисковых запросов, сайтов, Reddit и Telegram. Добавьте источник или импортируйте OPML на странице <Link to="/sources" className="underline underline-offset-4">«Источники»</Link>.
         </div>
       )}
       {d && (

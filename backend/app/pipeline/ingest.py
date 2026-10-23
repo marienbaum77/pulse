@@ -1,4 +1,4 @@
-"""Сбор материалов: RSS/Atom (и ручной импорт). Каждый коннектор возвращает список RawItem."""
+"""Сбор материалов: RSS/Atom, коннекторы (YouTube, веб-поиск, сайты, Reddit, Telegram) и ручной импорт; дообогащение текста."""
 import asyncio
 import logging
 import re
@@ -11,12 +11,14 @@ import feedparser
 import httpx
 import numpy as np
 import trafilatura
+from psycopg.types.json import Jsonb
 
 from .. import db, events, jobs
 from ..images import normalize_image_url, feed_entry_image
 from ..netguard import guarded_client
 from ..providers import refresh_provider
 from ..textutil import item_hash, strip_html, utcnow
+from . import connectors
 from .clustering_core import unit_vector
 
 log = logging.getLogger("pulse.ingest")
@@ -29,6 +31,14 @@ ARTICLE_BATCH_SIZE = 20
 ARTICLE_FETCH_CONCURRENCY = 4
 # Материалы сюжетов в этих состояниях можно дообогащать; так же условие читает и генерация, чтобы они не расходились.
 ENRICHABLE_CLUSTER_STATES = "('open','drafted','published','closed')"
+# Источники, чьи материалы дообогащаются: короткая заметка — полным текстом статьи, видео — субтитрами.
+# Telegram не входит: пост в канале уже и есть полный текст, а ссылка ведёт обратно в t.me.
+ENRICHABLE_SOURCE_TYPES = "('rss','youtube','web_search','site','reddit')"
+NEEDS_CONTENT_SQL = (
+    f"s.type IN {ENRICHABLE_SOURCE_TYPES} AND i.url <> '' "
+    f"AND (char_length(btrim(i.text)) < {MIN_RSS_TEXT_CHARS} OR i.kind = 'video')"
+)
+BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 _READ_MORE = re.compile(r"\b(?:читать\s+(?:далее|дальше|полностью)|read\s+more|continue\s+reading)\b.*$", re.I)
 _NEWS_LOCALES = {
     "de": ("DE", "de"),
@@ -62,7 +72,7 @@ def _strip_read_more_teaser(text: str) -> str:
     return _READ_MORE.sub("", text).strip()
 
 
-async def _get(url: str, headers: dict) -> httpx.Response:
+async def http_get(url: str, headers: dict) -> httpx.Response:
     """GET с ручной обработкой редиректов: каждый адрес проверяется на SSRF (pin IP)."""
     async with guarded_client(timeout=20, follow_redirects=False, headers=headers) as client:
         for _ in range(4):
@@ -74,7 +84,7 @@ async def _get(url: str, headers: dict) -> httpx.Response:
     raise ValueError("Слишком много редиректов")
 
 
-def _entry_time(e) -> datetime:
+def entry_time(e) -> datetime:
     for key in ("published_parsed", "updated_parsed"):
         t = e.get(key)
         if t:
@@ -95,23 +105,23 @@ def parse_feed(content: bytes) -> list[dict]:
         body = body or e.get("summary", "") or e.get("description", "")
         out.append({
             "title": title, "url": e.get("link", ""), "text": _strip_read_more_teaser(strip_html(body))[:MAX_TEXT],
-            "published_at": _entry_time(e), "image_url": feed_entry_image(e, body),
+            "published_at": entry_time(e), "image_url": feed_entry_image(e, body),
             "publisher_name": strip_html(e.get("source", {}).get("title", "")) or None,
         })
     return out
 
 
-async def fetch_feed(url: str, etag: str | None = None, last_modified: str | None = None) -> tuple[list[dict], dict]:
+async def fetch_feed(url: str, etag: str | None = None, last_modified: str | None = None, parser=parse_feed) -> tuple[list[dict], dict]:
     headers = {"User-Agent": "PulseBot/1.0 (+self-hosted)"}
     if etag:
         headers["If-None-Match"] = etag
     if last_modified:
         headers["If-Modified-Since"] = last_modified
-    r = await _get(url, headers)
+    r = await http_get(url, headers)
     if r.status_code == 304:
         return [], {"etag": etag, "last_modified": last_modified, "not_modified": True}
     r.raise_for_status()
-    return parse_feed(r.content), {"etag": r.headers.get("etag"), "last_modified": r.headers.get("last-modified")}
+    return parser(r.content), {"etag": r.headers.get("etag"), "last_modified": r.headers.get("last-modified")}
 
 
 def _extract_article(html: str, url: str) -> tuple[str, str | None]:
@@ -126,7 +136,16 @@ def _extract_article(html: str, url: str) -> tuple[str, str | None]:
 
 
 async def fetch_article(url: str) -> tuple[str, str | None]:
-    """Скачивает ограниченный HTML-документ с проверкой SSRF на каждом редиректе; возвращает (текст статьи, og:image)."""
+    """Скачивает статью и возвращает (текст статьи, og:image)."""
+    page = await fetch_html(url)
+    if page is None:
+        return "", None
+    html, final_url = page
+    return await asyncio.to_thread(_extract_article, html, final_url)
+
+
+async def fetch_html(url: str) -> tuple[str, str] | None:
+    """Скачивает ограниченный HTML-документ с проверкой SSRF на каждом редиректе; возвращает (html, итоговый адрес) или None, если это не HTML."""
     headers = {"User-Agent": "PulseBot/1.0 (+self-hosted)", "Accept": "text/html,application/xhtml+xml"}
     current_url = url
     timeout = httpx.Timeout(12.0, connect=5.0)
@@ -136,13 +155,13 @@ async def fetch_article(url: str) -> tuple[str, str | None]:
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("location")
                     if not location:
-                        return "", None
+                        return None
                     current_url = str(httpx.URL(current_url).join(location))
                     continue
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "").lower()
                 if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
-                    return "", None
+                    return None
                 content_length = response.headers.get("content-length")
                 if content_length and int(content_length) > MAX_ARTICLE_BYTES:
                     raise ValueError("Страница статьи превышает лимит 2 МБ")
@@ -154,7 +173,7 @@ async def fetch_article(url: str) -> tuple[str, str | None]:
                         raise ValueError("Страница статьи превышает лимит 2 МБ")
                     chunks.append(chunk)
                 html = b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
-            return await asyncio.to_thread(_extract_article, html, current_url)
+            return html, current_url
     raise ValueError("Слишком много редиректов при загрузке статьи")
 
 
@@ -164,21 +183,39 @@ async def _claim_short_articles(source_id: int, include_clustered: bool = False)
             cur = await conn.execute(
                 "WITH candidates AS ("
                 "SELECT i.id FROM items i JOIN sources s ON s.id = i.source_id "
-                "WHERE i.source_id = %s AND s.type = 'rss' AND i.status IN ('new','clustered') AND i.url <> '' "
+                f"WHERE i.source_id = %s AND {NEEDS_CONTENT_SQL} AND i.status IN ('new','clustered') "
                 f"AND (i.status = 'new' OR (%s AND EXISTS (SELECT 1 FROM clusters c WHERE c.id = i.cluster_id AND c.state IN {ENRICHABLE_CLUSTER_STATES}))) "
-                "AND char_length(btrim(i.text)) < %s AND (i.article_content_status = 'pending' OR "
+                "AND (i.article_content_status = 'pending' OR "
                 "(i.article_content_status = 'failed' AND i.article_content_started_at < now() - interval '1 day') OR "
                 "(i.article_content_status = 'running' AND i.article_content_started_at < now() - interval '10 minutes')) "
                 "ORDER BY i.published_at DESC, i.id LIMIT %s FOR UPDATE OF i SKIP LOCKED) "
                 "UPDATE items i SET article_content_status = 'running', article_content_started_at = now() "
-                "FROM candidates c WHERE i.id = c.id RETURNING i.id, i.title, i.url, i.text, i.status, i.cluster_id, i.image_url",
-                (source_id, include_clustered, MIN_RSS_TEXT_CHARS, ARTICLE_BATCH_SIZE),
+                "FROM candidates c WHERE i.id = c.id RETURNING i.id, i.title, i.url, i.text, i.status, i.cluster_id, i.image_url, i.kind",
+                (source_id, include_clustered, ARTICLE_BATCH_SIZE),
             )
             return await cur.fetchall()
 
 
-async def _enrich_article(item: dict, semaphore: asyncio.Semaphore) -> dict:
+async def _enrich_video(item: dict, result: dict, language: str) -> dict:
+    """Текст видео — субтитры; описание (часто это ссылки и реклама) остаётся хвостом для контекста."""
+    vid = connectors.youtube.video_id(item["url"])
+    try:
+        captions = await connectors.youtube.transcript(vid, language) if vid else ""
+    except Exception as e:
+        log.info("transcript fetch failed for item %s: %s", item["id"], e)
+        result["error"] = f"{type(e).__name__}: {e}"
+        return result
+    if len(captions) >= MIN_ARTICLE_TEXT_CHARS:
+        description = item["text"].strip()
+        result["article"] = (f"{captions}\n\n{description[:1500]}" if description else captions)[:MAX_TEXT]
+    return result
+
+
+async def _enrich_article(item: dict, semaphore: asyncio.Semaphore, language: str = "ru") -> dict:
     result = {"id": item["id"], "title": item["title"], "status": item["status"], "cluster_id": item["cluster_id"], "article": None, "image": None, "error": None}
+    if item.get("kind") == "video":
+        async with semaphore:
+            return await _enrich_video(item, result, language)
     async with semaphore:
         try:
             article, image = await fetch_article(item["url"])
@@ -212,7 +249,9 @@ async def enrich_articles(payload: dict) -> None:
 async def _run_article_enrichment(source_id: int, project_id: int, include_clustered: bool) -> None:
     rows = await _claim_short_articles(source_id, include_clustered)
     semaphore = asyncio.Semaphore(ARTICLE_FETCH_CONCURRENCY)
-    results = await asyncio.gather(*(_enrich_article(row, semaphore) for row in rows))
+    project = await db.fetchone("SELECT language FROM projects WHERE id = %s", (project_id,))
+    language = project["language"] if project else "ru"
+    results = await asyncio.gather(*(_enrich_article(row, semaphore, language) for row in rows))
     clustered_articles = [(index, r["title"], r["article"]) for index, r in enumerate(results) if r["status"] == "clustered" and r["article"]]
     embeddings: dict[int, np.ndarray] = {}
     if clustered_articles:
@@ -255,11 +294,11 @@ async def _run_article_enrichment(source_id: int, project_id: int, include_clust
 
     status_filter = "i.status = 'new'" if not include_clustered else f"i.status IN ('new','clustered') AND (i.status = 'new' OR EXISTS (SELECT 1 FROM clusters c WHERE c.id = i.cluster_id AND c.state IN {ENRICHABLE_CLUSTER_STATES}))"
     pending = await db.fetchone(
-        f"SELECT 1 FROM items i WHERE i.source_id = %s AND {status_filter} AND i.url <> '' AND char_length(btrim(i.text)) < %s "
+        f"SELECT 1 FROM items i JOIN sources s ON s.id = i.source_id WHERE i.source_id = %s AND {status_filter} AND {NEEDS_CONTENT_SQL} "
         "AND (i.article_content_status = 'pending' OR "
         "(i.article_content_status = 'failed' AND i.article_content_started_at < now() - interval '1 day') OR "
         "(i.article_content_status = 'running' AND i.article_content_started_at < now() - interval '10 minutes')) LIMIT 1",
-        (source_id, MIN_RSS_TEXT_CHARS),
+        (source_id,),
     )
     if pending:
         dedupe = f"article-backfill:{project_id}:{source_id}" if include_clustered else f"enrich:{project_id}:{source_id}"
@@ -273,9 +312,13 @@ async def _run_article_enrichment(source_id: int, project_id: int, include_clust
         await jobs.enqueue("process_project", {"project_id": project_id}, dedupe_key=f"process:{project_id}")
 
 
-async def insert_items(project_id: int, source_id: int | None, items: list[dict], window_hours: int | None = None) -> InsertStats:
-    """Вставляет материалы; дубликаты обогащают метаданные, не считаясь новыми."""
-    floor = utcnow() - timedelta(hours=window_hours) if window_hours else None
+async def insert_items(project_id: int, source_id: int | None, items: list[dict], window_hours: int | None = None, mode: str = "news") -> InsertStats:
+    """Вставляет материалы; дубликаты обогащают метаданные, не считаясь новыми.
+    В curated-режиме окно по дате не применяется: временем материала считается момент, когда его нашли
+    (исходная дата — в meta.published_original), а однажды виденная ссылка повторно не добавляется,
+    даже если материал уже удалён по сроку хранения."""
+    floor = utcnow() - timedelta(hours=window_hours) if window_hours and mode == "news" else None
+    now = utcnow()
     inserted = 0
     updated = 0
     updated_cluster_ids: set[int] = set()
@@ -283,10 +326,27 @@ async def insert_items(project_id: int, source_id: int | None, items: list[dict]
         for it in items:
             if floor and it["published_at"] < floor:
                 continue
-            h = item_hash(it.get("url", ""), it["title"], it.get("text", ""))
+            url = it.get("url", "")
+            vid = connectors.youtube.video_id(url)
+            if vid:
+                url = connectors.youtube.watch_url(vid)  # youtu.be/ID и watch?v=ID — одно видео, хеш должен совпасть
+            kind = it.get("kind") or ("video" if vid else "article")
+            meta = dict(it.get("meta") or {})
+            published_at = it["published_at"]
+            h = item_hash(url, it["title"], it.get("text", ""))
+            if mode == "curated":
+                meta.setdefault("published_original", published_at.isoformat())
+                published_at = now
+                cur = await conn.execute(
+                    "INSERT INTO content_seen(project_id, url_hash) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING 1", (project_id, h)
+                )
+                if await cur.fetchone() is None:
+                    cur = await conn.execute("SELECT 1 FROM items WHERE project_id = %s AND url_hash = %s", (project_id, h))
+                    if await cur.fetchone() is None:
+                        continue  # уже встречался и удалён по сроку хранения: не возвращаем его как новый кандидат
             cur = await conn.execute(
-                "INSERT INTO items(project_id, source_id, url, url_hash, title, text, published_at, image_url, publisher_name) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "INSERT INTO items(project_id, source_id, url, url_hash, title, text, published_at, image_url, publisher_name, kind, mode, meta) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "ON CONFLICT (project_id, url_hash) DO UPDATE SET "
                 "source_id = COALESCE(items.source_id, EXCLUDED.source_id), "
                 "image_url = COALESCE(items.image_url, EXCLUDED.image_url), "
@@ -295,8 +355,8 @@ async def insert_items(project_id: int, source_id: int | None, items: list[dict]
                 "OR (items.image_url IS NULL AND EXCLUDED.image_url IS NOT NULL) "
                 "OR (items.publisher_name IS NULL AND EXCLUDED.publisher_name IS NOT NULL) "
                 "RETURNING (xmax = 0) AS created, cluster_id",
-                (project_id, source_id, it.get("url", ""), h, it["title"][:500], it.get("text", "")[:MAX_TEXT],
-                 it["published_at"], normalize_image_url(it.get("image_url")), it.get("publisher_name")),
+                (project_id, source_id, url, h, it["title"][:500], it.get("text", "")[:MAX_TEXT],
+                 published_at, normalize_image_url(it.get("image_url")), it.get("publisher_name"), kind, mode, Jsonb(meta)),
             )
             row = await cur.fetchone()
             if row and row["created"]:
@@ -321,16 +381,20 @@ async def insert_items(project_id: int, source_id: int | None, items: list[dict]
 
 @jobs.handler("ingest_source")
 async def ingest_source(payload: dict) -> None:
-    src = await db.fetchone("SELECT s.*, p.window_hours FROM sources s JOIN projects p ON p.id = s.project_id WHERE s.id = %s", (payload["source_id"],))
-    if not src or not src["enabled"] or src["type"] != "rss":
+    src = await db.fetchone(
+        "SELECT s.*, p.window_hours, p.language, p.content_profile FROM sources s JOIN projects p ON p.id = s.project_id WHERE s.id = %s",
+        (payload["source_id"],),
+    )
+    if not src or not src["enabled"] or src["type"] not in connectors.FETCHERS:
         return
     try:
-        entries, meta = await fetch_feed(src["url"], src["etag"], src["last_modified"])
+        entries, meta = await connectors.fetch(src)
     except Exception as e:
         await db.execute("UPDATE sources SET last_fetched_at = now(), last_error = %s WHERE id = %s", (str(e)[:500], src["id"]))
         await events.notify("source", source_id=src["id"], ok=False)
         raise
-    stats = await insert_items(src["project_id"], src["id"], entries, src["window_hours"])
+    mode = connectors.item_mode(src["content_profile"], src["type"], src["config"])
+    stats = await insert_items(src["project_id"], src["id"], entries, src["window_hours"], mode)
     inserted = stats.inserted
     await db.execute(
         "UPDATE sources SET last_fetched_at = now(), last_ok_at = now(), last_error = NULL, etag = %s, last_modified = %s, "

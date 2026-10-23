@@ -1,13 +1,15 @@
-"""Источники: RSS, поиск, OPML."""
+"""Источники: RSS, поиск Google News, OPML и коннекторы (YouTube, веб-поиск, сайт без RSS, Reddit, Telegram)."""
 import xml.etree.ElementTree as ET
 from datetime import timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from .. import db, jobs
 from ..netguard import check_url
+from ..pipeline import connectors
 from ..pipeline.ingest import fetch_feed, google_news_search_url
 from ..security import audit, editor, viewer
 from ..textutil import item_hash, utcnow
@@ -19,7 +21,7 @@ class SourceBody(BaseModel):
     project_id: int
     type: Literal["rss"] = "rss"
     name: str = Field(min_length=1, max_length=120)
-    url: str = Field(min_length=8, max_length=1000)
+    url: str = Field("", max_length=1000)
     authority: float = Field(0.5, ge=0, le=1)
     poll_minutes: int = Field(30, ge=5, le=1440)
     enabled: bool = True
@@ -42,10 +44,48 @@ class SearchPreviewBody(BaseModel):
     query: str = Field(min_length=2, max_length=300)
 
 
+ConnectorType = Literal["youtube", "web_search", "site", "reddit", "telegram"]
+
+
+class ConnectorOptions(BaseModel):
+    time_range: Literal["day", "week", "month", "year"] | None = None
+    category: Literal["general", "news", "videos", "science", "it"] | None = None
+    sort: Literal["hot", "top", "new"] | None = None
+    period: Literal["day", "week", "month", "year"] | None = None
+    mode: Literal["news", "curated"] | None = None  # действует только в смешанном профиле проекта
+
+
+class ConnectorPreviewBody(BaseModel):
+    project_id: int
+    type: ConnectorType
+    value: str = Field(min_length=2, max_length=500)
+    options: ConnectorOptions = Field(default_factory=ConnectorOptions)
+
+
+class ConnectorBody(ConnectorPreviewBody):
+    name: str | None = Field(None, max_length=120)
+    authority: float = Field(0.5, ge=0, le=1)
+    poll_minutes: int = Field(360, ge=5, le=1440)
+    enabled: bool = True
+
+
+async def _known_hashes(project_id: int, entries: list[dict]) -> tuple[list[str], set[str]]:
+    """Хеши записей и те из них, что проект уже видел (в материалах или в памяти curated-контента)."""
+    hashes = [item_hash(entry.get("url", ""), entry["title"], entry.get("text", "")) for entry in entries]
+    if not hashes:
+        return hashes, set()
+    rows = await db.fetchall(
+        "SELECT url_hash FROM items WHERE project_id = %s AND url_hash = ANY(%s) "
+        "UNION SELECT url_hash FROM content_seen WHERE project_id = %s AND url_hash = ANY(%s)",
+        (project_id, hashes, project_id, hashes),
+    )
+    return hashes, {row["url_hash"] for row in rows}
+
+
 @router.get("/sources")
 async def list_sources(project_id: int, user=Depends(viewer)):
     return await db.fetchall(
-        "SELECT s.id, s.project_id, s.type, s.name, s.url, s.authority, s.poll_minutes, s.enabled, s.last_fetched_at, s.last_ok_at, s.last_error, "
+        "SELECT s.id, s.project_id, s.type, s.name, s.url, s.config, s.authority, s.poll_minutes, s.enabled, s.last_fetched_at, s.last_ok_at, s.last_error, "
         "s.last_entry_count, s.last_new_count, "
         "(SELECT count(*) FROM items i WHERE i.source_id = s.id) AS item_count "
         "FROM sources s WHERE s.project_id = %s ORDER BY s.id",
@@ -111,6 +151,53 @@ async def preview_search(body: SearchPreviewBody, user=Depends(editor)):
     }
 
 
+@router.post("/sources/connector/preview")
+async def preview_connector(body: ConnectorPreviewBody, user=Depends(editor)):
+    """Пробный сбор без сохранения: показывает, что будет приходить из источника."""
+    project = await db.fetchone("SELECT language, window_hours, content_profile FROM projects WHERE id = %s", (body.project_id,))
+    if not project:
+        raise HTTPException(404, "Проект не найден")
+    try:
+        prepared = await connectors.prepare(body.type, body.value, body.options.model_dump())
+        entries, _ = await connectors.fetch({"type": body.type, **prepared, "language": project["language"]})
+    except Exception as e:
+        raise HTTPException(400, f"Не удалось получить материалы: {e}")
+    hashes, known = await _known_hashes(body.project_id, entries)
+    mode = connectors.item_mode(project["content_profile"], body.type, prepared["config"])
+    floor = utcnow() - timedelta(hours=project["window_hours"])
+    return {
+        "name": prepared["name"],
+        "url": prepared["url"],
+        "mode": mode,
+        "feed_url": prepared["config"].get("feed_url"),
+        "count": len(entries),
+        "new_count": sum(1 for entry, h in zip(entries, hashes) if h not in known and (mode == "curated" or entry["published_at"] >= floor)),
+        "sample": [
+            {"title": entry["title"], "publisher": entry.get("publisher_name"), "kind": entry.get("kind") or "article", "url": entry.get("url", "")}
+            for entry in entries[:8]
+        ],
+    }
+
+
+@router.post("/sources/connector", status_code=201)
+async def create_connector_source(body: ConnectorBody, user=Depends(editor)):
+    if not await db.fetchone("SELECT 1 FROM projects WHERE id = %s", (body.project_id,)):
+        raise HTTPException(404, "Проект не найден")
+    try:
+        prepared = await connectors.prepare(body.type, body.value, body.options.model_dump())
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    name = (body.name or "").strip() or prepared["name"]
+    row = await db.fetchone(
+        "INSERT INTO sources(project_id, type, name, url, config, authority, poll_minutes, enabled) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        (body.project_id, body.type, name, prepared["url"], Jsonb(prepared["config"]), body.authority, body.poll_minutes, body.enabled),
+    )
+    await jobs.enqueue("ingest_source", {"source_id": row["id"]}, dedupe_key=f"ingest:{row['id']}")
+    await audit(user, "create", "source", row["id"], {"type": body.type, "value": body.value})
+    return row
+
+
 @router.post("/sources/preview")
 async def preview_source(body: PreviewBody, user=Depends(editor)):
     try:
@@ -122,6 +209,8 @@ async def preview_source(body: PreviewBody, user=Depends(editor)):
 
 @router.post("/sources", status_code=201)
 async def create_source(body: SourceBody, user=Depends(editor)):
+    if len(body.url) < 8:
+        raise HTTPException(400, "Укажите адрес ленты")
     try:
         await check_url(body.url)
     except ValueError as e:
@@ -137,6 +226,17 @@ async def create_source(body: SourceBody, user=Depends(editor)):
 
 @router.put("/sources/{sid}")
 async def update_source(sid: int, body: SourceBody, user=Depends(editor)):
+    current = await db.fetchone("SELECT type FROM sources WHERE id = %s", (sid,))
+    if not current:
+        raise HTTPException(404, "Источник не найден")
+    if current["type"] != "rss":
+        # Адрес коннектора вычислен из его настроек (ID канала, запрос), поэтому меняются только общие параметры.
+        await db.execute(
+            "UPDATE sources SET name=%s, authority=%s, poll_minutes=%s, enabled=%s WHERE id = %s",
+            (body.name, body.authority, body.poll_minutes, body.enabled, sid),
+        )
+        await audit(user, "update", "source", sid)
+        return {"id": sid}
     try:
         await check_url(body.url)
     except ValueError as e:

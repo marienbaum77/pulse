@@ -17,3 +17,4 @@ argon2-cffi==25.1.0
 cryptography==50.0.2
 pyjwt==2.15.0
 croniter==6.2.4
+youtube-transcript-api==1.2.4

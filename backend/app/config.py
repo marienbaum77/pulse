@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     image_cache_max_mb: int = 500
     image_cache_max_age_days: int = 30
 
+    # Метапоисковик для источников «веб-поиск» и поиска видео YouTube; адрес задаёт администратор, поэтому он может быть внутренним.
+    searxng_url: str = ""
+    # Прокси только для субтитров YouTube: с IP облачных VPS YouTube часто отдаёт 429/блокировку.
+    youtube_proxy_url: str = ""
+
     allow_private_urls: bool = False
     trusted_proxies: str = "127.0.0.1,::1,172.16.0.0/12,10.0.0.0/8"  # IP/CIDR клиентов, которым доверяем X-Forwarded-For
     telegram_bot_token: str = ""

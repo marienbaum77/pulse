@@ -16,7 +16,7 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements-dev.txt
       - run: pip install -r backend/requirements-dev.txt
-      - run: pytest -q tests/test_units.py
+      - run: pytest -q tests/test_units.py tests/test_connectors.py
         working-directory: backend
 
   backend-integration:

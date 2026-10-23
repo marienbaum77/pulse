@@ -71,7 +71,7 @@ async def dashboard(project_id: int, days: int = Query(7, ge=1, le=90), user=Dep
     upcoming = sorted(({"id": s["id"], "name": s["name"], "kind": s["kind"], "at": next_fire(s["cron"], s["tz"], now)} for s in schedules), key=lambda x: x["at"])[:3]
 
     hb = await q("SELECT updated_at FROM kv WHERE key = 'worker_heartbeat'")
-    src = await q("SELECT max(last_ok_at) AS last_ok, count(*) FILTER (WHERE last_error IS NOT NULL AND enabled) AS failing, count(*) FILTER (WHERE type = 'rss' AND enabled) AS rss_enabled FROM sources WHERE project_id = %s", (project_id,))
+    src = await q("SELECT max(last_ok_at) AS last_ok, count(*) FILTER (WHERE last_error IS NOT NULL AND enabled) AS failing, count(*) FILTER (WHERE type <> 'manual' AND enabled) AS rss_enabled FROM sources WHERE project_id = %s", (project_id,))
     jobs_row = await q("SELECT count(*) FILTER (WHERE status = 'queued') AS queued, count(*) FILTER (WHERE status = 'failed' AND finished_at > now() - interval '24 hours') AS failed FROM jobs")
     llm = await q(
         "SELECT count(*) AS calls, COALESCE(avg(latency_ms) FILTER (WHERE kind = 'chat'), 0)::int AS avg_chat_ms, "

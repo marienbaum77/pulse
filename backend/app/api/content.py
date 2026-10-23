@@ -87,7 +87,8 @@ async def list_clusters(
         params.append(min_interest)
     return await db.fetchall(
         "SELECT c.id, c.title, c.state, c.item_count, c.source_count, c.first_seen, c.last_seen, c.score, c.score_breakdown, c.published_at, "
-        "c.interest, c.interest_reason, "
+        "c.interest, c.interest_reason, c.mode, "
+        "(SELECT i.kind FROM items i WHERE i.cluster_id = c.id AND i.status = 'clustered' ORDER BY (i.kind = 'video') DESC, i.id LIMIT 1) AS kind, "
         "(SELECT array_agg(i.published_at ORDER BY i.published_at) FROM items i WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate')) AS arrivals, "
         "(SELECT i.id FROM items i WHERE i.cluster_id = c.id AND i.status = 'clustered' AND i.image_url IS NOT NULL ORDER BY i.published_at DESC LIMIT 1) AS image_item_id "
         f"FROM clusters c WHERE {' AND '.join(where)} ORDER BY (c.state = 'open') DESC, "
@@ -106,12 +107,14 @@ async def clear_project_clusters(project_id: int, user=Depends(editor)):
 @router.get("/clusters/{cid}")
 async def get_cluster(cid: int, user=Depends(viewer)):
     c = await db.fetchone(
-        "SELECT id, project_id, title, state, item_count, source_count, first_seen, last_seen, score, score_breakdown, published_at, interest, interest_reason FROM clusters WHERE id = %s", (cid,)
+        "SELECT id, project_id, title, state, item_count, source_count, first_seen, last_seen, score, score_breakdown, published_at, interest, interest_reason, mode "
+        "FROM clusters WHERE id = %s", (cid,)
     )
     if not c:
         raise HTTPException(404, "Сюжет не найден")
     c["items"] = await db.fetchall(
-        "SELECT i.id, i.title, i.url, i.published_at, COALESCE(NULLIF(i.publisher_name, ''), s.name) AS source_name, (i.image_url IS NOT NULL) AS has_image FROM items i LEFT JOIN sources s ON s.id = i.source_id "
+        "SELECT i.id, i.title, i.url, i.published_at, i.kind, i.meta, COALESCE(NULLIF(i.publisher_name, ''), s.name) AS source_name, "
+        "(i.image_url IS NOT NULL) AS has_image FROM items i LEFT JOIN sources s ON s.id = i.source_id "
         "WHERE i.cluster_id = %s AND i.status IN ('clustered', 'duplicate') ORDER BY i.published_at",
         (cid,),
     )
@@ -254,12 +257,13 @@ async def edit_draft(did: int, body: DraftPatch, user=Depends(editor)):
         raise HTTPException(409, "Утверждённый черновик править нельзя")
     new_body = body.body if body.body is not None else d["body"]
     new_title = body.title if body.title is not None else d["title"]
-    checks = {**check_text(new_body, d["citations"]), "mode": d["params"].get("mode", "extractive"), "edited": True}
+    fmt = (d["checks"] or {}).get("format", "news")
+    checks = {**check_text(new_body, d["citations"]), "mode": d["params"].get("mode", "extractive"), "format": fmt, "edited": True}
     project = await db.fetchone("SELECT publish_mode, max_length, language FROM projects WHERE id = %s", (d["project_id"],))
     if project["publish_mode"] in ("auto", "full_auto"):
         checks["automatic_review"] = automatic_review(
             new_title, new_body, d["citations"], checks, project["max_length"], d["kind"],
-            project["language"],
+            project["language"], fmt=fmt if d["kind"] == "post" else "news",
         )
     new_image = d["image_url"]
     if body.remove_image:

@@ -10,7 +10,7 @@ from .. import db, events, jobs
 from ..config import get_settings
 from ..providers import refresh_provider
 from ..textutil import utcnow
-from .ingest import MIN_RSS_TEXT_CHARS
+from .ingest import NEEDS_CONTENT_SQL
 from . import minhash as minhash_mod
 from . import scoring
 from . import interest as interest_mod
@@ -19,6 +19,8 @@ from .clustering_core import Cluster, OnlineClusterer, unit_vector
 log = logging.getLogger("pulse.process")
 DUP_SIM = 0.985  # сходство, выше которого материал считается почти-дубликатом уже принятого
 SEARCH_SIM_THRESHOLD = 0.84
+# В curated-режиме сюжет — это один материал и его пересказы; тематически близкие видео остаются отдельными кандидатами.
+CURATED_SIM_THRESHOLD = 0.88
 
 
 def parse_topic_aspects(topic: str) -> list[str]:
@@ -145,7 +147,9 @@ async def deduplicate_new(project: dict) -> dict[str, int]:
         return {"checked": 0, "duplicates": 0}
 
     pid = project["id"]
-    window = timedelta(hours=project["window_hours"])
+    # Подборочный контент живёт дольше новостей — перепечатки ищем во всём его окне.
+    curated_hours = project["curated_window_hours"] if project["content_profile"] != "news" else 0
+    window = timedelta(hours=max(project["window_hours"], curated_hours))
     threshold = getattr(settings, "minhash_threshold", minhash_mod.DEFAULT_THRESHOLD)
 
     new_rows = await db.fetchall(
@@ -343,28 +347,29 @@ WHERE c.id = ANY(%s)
 """
 
 
-async def cluster_new(project: dict) -> dict:
+def mode_window(project: dict, mode: str) -> timedelta:
+    return timedelta(hours=project["curated_window_hours"] if mode == "curated" else project["window_hours"])
+
+
+async def _cluster_mode(project: dict, mode: str, items: list[dict]) -> tuple[list[tuple[int, Cluster]], list[tuple[int, int]], list[Cluster]]:
+    """Кластеризация материалов одного режима. В curated порог высокий: объединяются только пересказы одного
+    и того же материала (видео и статья о нём), а не просто близкие по теме — каждый материал сам по себе кандидат."""
     pid = project["id"]
-    window = timedelta(hours=project["window_hours"])
-    items = await db.fetchall(
-        "SELECT i.id, i.published_at, i.embedding, "
-        "EXISTS(SELECT 1 FROM sources s WHERE s.id = i.source_id AND s.url LIKE 'https://news.google.com/rss/search?%%') AS is_search_result "
-        "FROM items i WHERE i.project_id = %s AND i.status = 'embedded' ORDER BY i.published_at, i.id",
-        (pid,),
-    )
-    if not items:
-        return {"clustered": 0, "duplicates": 0, "new_clusters": 0}
+    window = mode_window(project, mode)
     since = items[0]["published_at"] - window
     rows = await db.fetchall(
         "SELECT id, centroid, item_count, first_seen, last_seen FROM clusters "
-        "WHERE project_id = %s AND state <> 'closed' AND last_seen >= %s AND centroid IS NOT NULL",
-        (pid, since),
+        "WHERE project_id = %s AND mode = %s AND state <> 'closed' AND last_seen >= %s AND centroid IS NOT NULL",
+        (pid, mode, since),
     )
+    base_threshold = max(project["sim_threshold"], CURATED_SIM_THRESHOLD) if mode == "curated" else project["sim_threshold"]
     clusterer = OnlineClusterer(
-        project["sim_threshold"], window, [Cluster.from_db(r["id"], r["centroid"], r["item_count"], r["first_seen"], r["last_seen"]) for r in rows]
+        base_threshold, window, [Cluster.from_db(r["id"], r["centroid"], r["item_count"], r["first_seen"], r["last_seen"]) for r in rows]
     )
     index = VectorIndex()
-    for r in await db.fetchall("SELECT id, embedding FROM items WHERE project_id = %s AND status = 'clustered' AND published_at >= %s", (pid, since)):
+    for r in await db.fetchall(
+        "SELECT id, embedding FROM items WHERE project_id = %s AND mode = %s AND status = 'clustered' AND published_at >= %s", (pid, mode, since)
+    ):
         index.add(r["id"], unit_vector(r["embedding"]))
 
     assigned: list[tuple[int, Cluster]] = []
@@ -382,16 +387,38 @@ async def cluster_new(project: dict) -> dict:
         clusterer.threshold = threshold
         assigned.append((r["id"], cluster))
         index.add(r["id"], v)
+    return assigned, dups, [c for c in clusterer.clusters if c.touched]
 
-    touched = [c for c in clusterer.clusters if c.touched]
-    new_clusters = sum(1 for c in touched if c.is_new)
+
+async def cluster_new(project: dict) -> dict:
+    pid = project["id"]
+    items = await db.fetchall(
+        "SELECT i.id, i.published_at, i.embedding, i.mode, "
+        "EXISTS(SELECT 1 FROM sources s WHERE s.id = i.source_id AND s.url LIKE 'https://news.google.com/rss/search?%%') AS is_search_result "
+        "FROM items i WHERE i.project_id = %s AND i.status = 'embedded' ORDER BY i.published_at, i.id",
+        (pid,),
+    )
+    if not items:
+        return {"clustered": 0, "duplicates": 0, "new_clusters": 0}
+    assigned: list[tuple[int, Cluster]] = []
+    dups: list[tuple[int, int]] = []
+    touched: list[tuple[str, Cluster]] = []
+    for mode in ("news", "curated"):
+        batch = [r for r in items if r["mode"] == mode]
+        if batch:
+            a, d, t = await _cluster_mode(project, mode, batch)
+            assigned += a
+            dups += d
+            touched += [(mode, c) for c in t]
+
+    new_clusters = sum(1 for _, c in touched if c.is_new)
     async with db.pool.connection() as conn:
         async with conn.transaction():
-            for c in touched:
+            for mode, c in touched:
                 if c.id is None:
                     cur = await conn.execute(
-                        "INSERT INTO clusters(project_id, centroid, first_seen, last_seen, item_count) VALUES (%s,%s,%s,%s,%s) RETURNING id",
-                        (pid, c.centroid, c.first_seen, c.last_seen, c.n),
+                        "INSERT INTO clusters(project_id, centroid, first_seen, last_seen, item_count, mode) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                        (pid, c.centroid, c.first_seen, c.last_seen, c.n, mode),
                     )
                     c.id = (await cur.fetchone())["id"]
                 else:
@@ -404,15 +431,17 @@ async def cluster_new(project: dict) -> dict:
                     "UPDATE items SET status = 'duplicate', dup_of = %s, cluster_id = (SELECT cluster_id FROM items WHERE id = %s) WHERE id = %s",
                     (dup_of, dup_of, item_id),
                 )
-            ids = [c.id for c in touched]
+            ids = [c.id for _, c in touched]
             if ids:
                 await conn.execute(AGG_SQL, (ids,))
                 await conn.execute(TITLE_SQL, (ids,))
     return {"clustered": len(assigned), "duplicates": len(dups), "new_clusters": new_clusters}
 
 
-SCORE_SQL = """
-SELECT c.id, c.centroid,
+# Окно сюжета зависит от режима: новость устаревает за window_hours, подборочный материал живёт curated_window_hours.
+MODE_WINDOW_SQL = "make_interval(hours => CASE WHEN c.mode = 'curated' THEN %s ELSE %s END)"
+SCORE_SQL = f"""
+SELECT c.id, c.centroid, c.mode,
   (SELECT avg(i.title_embedding) FROM items i
    WHERE i.cluster_id = c.id AND i.status = 'clustered' AND i.title_embedding IS NOT NULL) AS title_centroid,
   (SELECT avg(i.topic_score) FROM items i
@@ -421,18 +450,29 @@ SELECT c.id, c.centroid,
   COALESCE((SELECT avg(a) FROM (SELECT DISTINCT s.id, s.authority AS a FROM items i JOIN sources s ON s.id = i.source_id
             WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate')) t), 0.5) AS authority,
   (SELECT count(*) FROM items i WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate')
-     AND i.published_at >= now() - interval '6 hours') AS recent
+     AND i.published_at >= now() - interval '6 hours') AS recent,
+  (SELECT COALESCE(max(char_length(btrim(i.text))), 0) FROM items i
+   WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate')) AS content_length,
+  (SELECT COALESCE(jsonb_agg(i.meta), '[]'::jsonb) FROM items i
+   WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate')) AS metas
 FROM clusters c
 WHERE c.project_id = %s AND c.state IN ('open', 'published') AND c.centroid IS NOT NULL
-  AND c.last_seen >= now() - make_interval(hours => %s)
+  AND c.last_seen >= now() - {MODE_WINDOW_SQL}
 """
+
+
+def _windows(project: dict) -> tuple[int, int]:
+    return project["curated_window_hours"], project["window_hours"]
 
 
 async def refresh_clusters(project: dict) -> int:
     """Закрывает устаревшие кластеры и пересчитывает NWS для активных."""
-    pid, hours = project["id"], project["window_hours"]
-    await db.execute("UPDATE clusters SET state = 'closed' WHERE project_id = %s AND state = 'open' AND last_seen < now() - make_interval(hours => %s)", (pid, hours))
-    rows = sorted(await db.fetchall(SCORE_SQL, (pid, hours)), key=lambda r: r["id"])
+    pid = project["id"]
+    await db.execute(
+        f"UPDATE clusters c SET state = 'closed' WHERE c.project_id = %s AND c.state = 'open' AND c.last_seen < now() - {MODE_WINDOW_SQL}",
+        (pid, *_windows(project)),
+    )
+    rows = sorted(await db.fetchall(SCORE_SQL, (pid, *_windows(project))), key=lambda r: r["id"])
     now = utcnow()
     # Без настоящей модели эмбеддингов «близость к теме» не измеряется и остаётся нейтральной.
     provider = await refresh_provider()
@@ -444,39 +484,60 @@ async def refresh_clusters(project: dict) -> int:
             # Приоритет — средний topic_score материалов сюжета (устойчив к размытому центроиду больших сюжетов).
             # Если оценок ещё нет (старые материалы, идёт догонка), остаётся прежний расчёт по центроиду заголовков.
             item_fit = r["topic_score"] is not None
-            feats = scoring.compute_features(
-                centroid=r["title_centroid"] if r["title_centroid"] is not None else r["centroid"],
-                source_count=r["source_count"],
-                authority=float(r["authority"]),
-                age_hours=(now - r["last_seen"]).total_seconds() / 3600,
-                recent_items=r["recent"],
-                window_hours=hours,
-                topic_vec=topic_vec,
-                topic_fit=float(r["topic_score"]) if item_fit else None,
-            )
-            if item_fit:
-                row_neutral = frozenset()  # оценка по материалам измерена — нейтральной подстановки нет
+            centroid = r["title_centroid"] if r["title_centroid"] is not None else r["centroid"]
+            age_hours = (now - r["last_seen"]).total_seconds() / 3600
+            curated = r["mode"] == "curated"
+            if curated:
+                feats, row_neutral = scoring.compute_curated_features(
+                    centroid=centroid,
+                    authority=float(r["authority"]),
+                    age_hours=age_hours,
+                    window_hours=project["curated_window_hours"],
+                    topic_vec=topic_vec,
+                    topic_fit=float(r["topic_score"]) if item_fit else None,
+                    metas=list(r["metas"] or []),
+                    content_length=int(r["content_length"]),
+                )
             else:
+                feats = scoring.compute_features(
+                    centroid=centroid,
+                    source_count=r["source_count"],
+                    authority=float(r["authority"]),
+                    age_hours=age_hours,
+                    recent_items=r["recent"],
+                    window_hours=project["window_hours"],
+                    topic_vec=topic_vec,
+                    topic_fit=float(r["topic_score"]) if item_fit else None,
+                )
+                row_neutral = frozenset()
+            if not item_fit:
+                # оценки по материалам ещё нет: близость к теме считается по центроиду или остаётся нейтральной
                 if r["title_centroid"] is None and topic_vec is not None:
                     feats["topic_fit"] = 0.5
-                row_neutral = neutral if r["title_centroid"] is not None else neutral | frozenset({"topic_fit"})
-            score, parts = scoring.nws(feats, project["weights"], row_neutral)
+                row_neutral |= neutral if r["title_centroid"] is not None else neutral | frozenset({"topic_fit"})
+            if curated:
+                # Веса из настроек проекта описывают новостные признаки; у подборочного контента свой набор.
+                score, parts = scoring.nws(feats, {}, row_neutral, defaults=scoring.CURATED_WEIGHTS)
+            else:
+                score, parts = scoring.nws(feats, project["weights"], row_neutral)
             await conn.execute("UPDATE clusters SET score = %s, score_breakdown = %s WHERE id = %s", (score, Jsonb(parts), r["id"]))
     return len(rows)
 
 
 async def select_clusters(project: dict, limit: int) -> list[dict]:
-    """Кандидаты на публикацию: открытые кластеры с достаточным числом материалов
-    и уже опубликованные, которые заметно выросли (для поста-обновления)."""
+    """Кандидаты на публикацию: открытые новостные сюжеты с достаточным числом материалов, уже опубликованные,
+    которые заметно выросли (для поста-обновления), и открытые curated-материалы — им второй источник не нужен."""
     return await db.fetchall(
-        "SELECT id, title, score, item_count, source_count, state FROM clusters "
-        "WHERE project_id = %s AND score IS NOT NULL AND last_seen >= now() - make_interval(hours => %s) AND ("
-        "  (state = 'open' AND item_count >= %s) OR "
-        "  (state = 'published' AND item_count >= COALESCE(item_count_at_publish, 0) * 1.5 AND item_count - COALESCE(item_count_at_publish, 0) >= 3)"
-        ") AND (%s <= 0 OR COALESCE((score_breakdown->'topic_fit'->>'neutral')::boolean, false) "
-        "OR COALESCE((score_breakdown->'topic_fit'->>'value')::float, 0.5) >= %s) "
-        "ORDER BY COALESCE((score_breakdown->'topic_fit'->>'value')::float, 0.5) DESC, score DESC, id LIMIT %s",
-        (project["id"], project["window_hours"], project["min_items"], project["topic_threshold"], project["topic_threshold"], limit),
+        "SELECT c.id, c.title, c.score, c.item_count, c.source_count, c.state, c.mode FROM clusters c "
+        f"WHERE c.project_id = %s AND c.score IS NOT NULL AND c.last_seen >= now() - {MODE_WINDOW_SQL} AND ("
+        "  (c.mode = 'curated' AND c.state = 'open') OR "
+        "  (c.mode = 'news' AND c.state = 'open' AND c.item_count >= %s) OR "
+        "  (c.mode = 'news' AND c.state = 'published' AND c.item_count >= COALESCE(c.item_count_at_publish, 0) * 1.5 "
+        "   AND c.item_count - COALESCE(c.item_count_at_publish, 0) >= 3)"
+        ") AND (%s <= 0 OR COALESCE((c.score_breakdown->'topic_fit'->>'neutral')::boolean, false) "
+        "OR COALESCE((c.score_breakdown->'topic_fit'->>'value')::float, 0.5) >= %s) "
+        "ORDER BY COALESCE((c.score_breakdown->'topic_fit'->>'value')::float, 0.5) DESC, c.score DESC, c.id LIMIT %s",
+        (project["id"], *_windows(project), project["min_items"], project["topic_threshold"], project["topic_threshold"], limit),
     )
 
 
@@ -537,10 +598,9 @@ async def process_project_job(payload: dict) -> None:
     project_id = int(payload["project_id"])
     pending = await db.fetchone(
         "SELECT i.source_id, i.article_content_status, i.article_content_started_at FROM items i "
-        "JOIN sources s ON s.id = i.source_id WHERE i.project_id = %s AND s.type = 'rss' "
-        "AND i.status = 'new' AND i.url <> '' AND char_length(btrim(i.text)) < %s "
-        "AND i.article_content_status IN ('pending','running') ORDER BY i.published_at DESC LIMIT 1",
-        (project_id, MIN_RSS_TEXT_CHARS),
+        f"JOIN sources s ON s.id = i.source_id WHERE i.project_id = %s AND {NEEDS_CONTENT_SQL} "
+        "AND i.status = 'new' AND i.article_content_status IN ('pending','running') ORDER BY i.published_at DESC LIMIT 1",
+        (project_id,),
     )
     if pending and jobs.current_age_seconds() < 900:
         source_id = int(pending["source_id"])

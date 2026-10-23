@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Content sources beyond news: YouTube (channel, playlist or search; transcripts as item text, no API key), web search via a bundled SearXNG service, sites without RSS (feed autodiscovery or article links from a listing page), Reddit (Atom feed) and public Telegram channels (t.me/s preview)
+- Channel type per project: news, curated (each video/article/post is a standalone candidate with its own window, engagement and depth scoring) or mixed (per-source default with override)
+- Post formats by material: video recommendation, article breakdown, post retelling; digests of curated items are titled «Подборка»
+- `content_seen` memory so curated links removed by retention are not re-added by search
+- `SEARXNG_URL`, `SEARXNG_SECRET`, `YOUTUBE_PROXY_URL` settings
+
 - Publication channels: VK (wall) and Discord (webhook embeds)
 - Stage-1 lexical dedup via MinHash/LSH before embeddings (MINHASH_DEDUP_ENABLED, MINHASH_THRESHOLD)
 - At-rest encryption for channel secrets (secret, ccess_token, Discord webhook_url) derived from SECRET_KEY; plaintext values are re-encrypted on API/worker startup

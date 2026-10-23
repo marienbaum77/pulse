@@ -1,0 +1,22 @@
+# SearXNG для Pulse: внутренний метапоисковик для источников «Веб-поиск» и поиска видео YouTube.
+# Наружу не публикуется, поэтому лимитер (ему нужен Valkey/Redis) выключен. Секрет задаётся переменной SEARXNG_SECRET.
+use_default_settings: true
+
+general:
+  instance_name: "Pulse search"
+
+server:
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+search:
+  safe_search: 1
+  # json обязателен: Pulse читает выдачу через /search?format=json.
+  formats:
+    - html
+    - json
+
+ui:
+  static_use_hash: true

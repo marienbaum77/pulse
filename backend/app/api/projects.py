@@ -13,7 +13,8 @@ router = APIRouter(tags=["projects"])
 
 PROJECT_COLS = (
     "id, name, topic, topic_aspects, language, tone, max_length, prompt_template, prompt_version, generation_mode, publish_mode, window_hours, "
-    "sim_threshold, topic_threshold, weights, context_items, context_sentences, min_items, auto_retry_unknown, show_sources, active, created_at"
+    "sim_threshold, topic_threshold, weights, context_items, context_sentences, min_items, auto_retry_unknown, show_sources, active, "
+    "content_profile, curated_window_hours, created_at"
 )
 
 
@@ -38,6 +39,9 @@ class ProjectBody(BaseModel):
     auto_retry_unknown: bool = False
     show_sources: bool = True
     active: bool = True
+    # news — сюжеты из нескольких источников; curated — каждый материал (видео, статья) сам по себе кандидат; mixed — по источнику.
+    content_profile: Literal["news", "curated", "mixed"] = "news"
+    curated_window_hours: int = Field(336, ge=24, le=2160)
 
     @field_validator("weights")
     @classmethod
