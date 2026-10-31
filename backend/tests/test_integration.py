@@ -849,10 +849,13 @@ async def test_telegram_uploads_photo_for_short_and_long_posts(monkeypatch):
         }
         assert len(long_message["text"]) > publisher.CAPTION_LIMIT
 
-        broken = {**short, "id": 3, "image_url": f"{srv.url}/missing.txt"}
-        before = len(calls)
-        assert (await publisher.send_telegram(channel, broken, {"id": 1})).kind == "failed"
-        assert len(calls) == before  # не публикуем без картинки, указанной в черновике
+        # Обложка не картинка — берётся следующая иллюстрация поста; не подошла ни одна — пост уходит текстом.
+        broken = {**short, "id": 3, "image_url": f"{srv.url}/missing.txt", "extra_images": [f"{srv.url}/img/2.png"]}
+        assert (await publisher.send_telegram(channel, broken, {"id": 1})).kind == "sent"
+        assert calls[-1][0] == "sendPhoto"
+        only_broken = {**short, "id": 4, "image_url": f"{srv.url}/missing.txt"}
+        assert (await publisher.send_telegram(channel, only_broken, {"id": 1})).kind == "sent"
+        assert calls[-1][0] == "sendMessage"
 
 
 async def test_scheduled_generation_jobs_are_deduplicated():

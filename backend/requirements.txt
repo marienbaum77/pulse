@@ -16,3 +16,7 @@ cryptography>=42
 pyjwt>=2.8
 croniter>=2.0
 youtube-transcript-api>=1.2,<2
+# Готовый ffmpeg для перекодирования GIF в MP4 перед отправкой в Telegram (без apt и системных библиотек)
+imageio-ffmpeg>=0.5,<1
+# приведение картинок нестандартных форматов (AVIF, BMP, TIFF) и без верного Content-Type к JPEG
+pillow>=11.3,<14

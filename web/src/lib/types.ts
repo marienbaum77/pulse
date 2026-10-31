@@ -3,15 +3,22 @@ export interface User { id: number; email: string; role: Role; created_at?: stri
 
 export interface Project {
   id: number; name: string; topic: string; topic_aspects: string[]; language: string; tone: string; max_length: number;
+  /** Длина поста-разбора статьи: лонгрид из одного источника или статья в подборке. */
+  article_max_length: number;
   prompt_template: string; prompt_version: number; generation_mode: "llm" | "extractive" | "auto"; publish_mode: "review" | "auto" | "full_auto";
   window_hours: number; sim_threshold: number; topic_threshold: number; weights: Record<string, number>;
   context_items: number; context_sentences: number; min_items: number; auto_retry_unknown: boolean; show_sources: boolean; active: boolean;
   content_profile: ContentProfile; curated_window_hours: number; source_cooldown_hours: number;
+  instant_interest: number | null; instant_daily_limit: number; single_min_interest: number | null; slot_min_interest: number | null;
+  interest_criteria: string;
+  reply_related_days: number;
+  /** Аспекты темы составила модель; правка вручную это отключает. Только для чтения. */
+  topic_aspects_auto: boolean;
 }
 export type ContentProfile = "news" | "curated" | "mixed";
 export type ContentMode = "news" | "curated";
 export type ContentKind = "article" | "video" | "post";
-export type ProjectInput = Omit<Project, "id" | "prompt_version">;
+export type ProjectInput = Omit<Project, "id" | "prompt_version" | "topic_aspects_auto">;
 
 export interface ScorePart { value: number; weight: number; contribution: number; neutral?: boolean }
 export type ClusterState = "open" | "drafted" | "published" | "closed" | "excluded";
@@ -35,7 +42,9 @@ export interface Citation { n: number; item_id: number; title: string; url: stri
 export interface DraftChecks {
   mode?: string; invalid_citations?: number[]; citation_coverage?: number;
   length?: number; edited?: boolean; fallback?: string;
-  automatic_review?: { passed: boolean; reasons: string[]; overridden?: boolean; auto_publish_enabled?: boolean };
+  automatic_review?: { passed: boolean; reasons: string[]; overridden?: boolean; auto_publish_enabled?: boolean; instant?: boolean };
+  /** Прежний пост, на который новый выйдет ответом: update — тот же сюжет, link — тот же репозиторий, origin — тот же первоисточник, similar — близкая тема. */
+  related?: { draft_id: number; title: string; reason: "update" | "link" | "origin" | "similar"; similarity: number };
 }
 export interface DraftListItem {
   id: number; kind: "post" | "digest"; title: string; status: DraftStatus; model: string | null;
@@ -45,7 +54,8 @@ export interface GenerationJob {
   id: number; status: "queued"; created_at: string; kind: "post" | "digest"; title: string;
 }
 export interface Draft extends DraftListItem {
-  project_id: number; image_url: string | null; body: string; citations: Citation[]; params: Record<string, unknown>;
+  project_id: number; image_url: string | null; video_url: string | null; video_kind: "video" | "animation"; extra_images: string[];
+  reply_to_draft_id: number | null; body: string; citations: Citation[]; params: Record<string, unknown>;
   publications: { id: number; status: PubStatus; error: string | null; sent_at: string | null; channel_name: string }[];
 }
 

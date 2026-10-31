@@ -18,3 +18,5 @@ cryptography==50.0.2
 pyjwt==2.15.0
 croniter==6.2.4
 youtube-transcript-api==1.2.4
+imageio-ffmpeg==0.6.0
+pillow==13.0.0

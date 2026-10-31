@@ -27,7 +27,7 @@ async def dashboard(project_id: int, days: int = Query(7, ge=1, le=90), user=Dep
     prev = await q("SELECT count(*) AS n FROM items WHERE project_id = %s AND published_at >= %s AND published_at < %s", (project_id, prev_since, since))
     open_clusters = await q(
         "SELECT count(*) AS n FROM clusters c JOIN projects p ON p.id = c.project_id "
-        "WHERE c.project_id = %s AND c.state = 'open' AND c.item_count >= p.min_items", (project_id,)
+        "WHERE c.project_id = %s AND c.state = 'open' AND (c.item_count >= p.min_items OR c.interest >= p.single_min_interest)", (project_id,)
     )
     pending = await q("SELECT count(*) AS n FROM drafts WHERE project_id = %s AND status = 'pending_review'", (project_id,))
     sent = await q(
@@ -44,7 +44,7 @@ async def dashboard(project_id: int, days: int = Query(7, ge=1, le=90), user=Dep
 
     top = await db.fetchall(
         "SELECT c.id, c.title, c.score, c.item_count, c.source_count, c.last_seen FROM clusters c JOIN projects p ON p.id = c.project_id "
-        "WHERE c.project_id = %s AND c.state = 'open' AND c.item_count >= p.min_items "
+        "WHERE c.project_id = %s AND c.state = 'open' AND (c.item_count >= p.min_items OR c.interest >= p.single_min_interest) "
         "AND (p.topic_threshold <= 0 OR COALESCE((c.score_breakdown->'topic_fit'->>'neutral')::boolean, false) "
         "OR COALESCE((c.score_breakdown->'topic_fit'->>'value')::float, 0.5) >= p.topic_threshold) "
         "ORDER BY COALESCE((c.score_breakdown->'topic_fit'->>'value')::float, 0.5) DESC, c.score DESC NULLS LAST LIMIT 6",

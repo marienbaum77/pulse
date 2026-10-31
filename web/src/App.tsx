@@ -14,6 +14,7 @@ const Trends = React.lazy(() => import("./pages/Trends"));
 const Plan = React.lazy(() => import("./pages/Plan"));
 const ProjectSettings = React.lazy(() => import("./pages/ProjectSettings"));
 const Admin = React.lazy(() => import("./pages/Admin"));
+const Stats = React.lazy(() => import("./pages/Stats"));
 
 function Protected({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="drafts/:id?" element={<Drafts />} />
           <Route path="plan" element={<Plan />} />
           <Route path="publications" element={<Publications />} />
+          <Route path="stats" element={<Stats />} />
           <Route path="sources" element={<Sources />} />
           <Route path="channels" element={<Channels />} />
           <Route path="project" element={<ProjectSettings />} />

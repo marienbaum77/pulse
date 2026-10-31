@@ -6,6 +6,8 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, field_validator
 
 from .. import db, jobs
+from ..pipeline import aspects
+from ..pipeline.generate import FORMAT_PROMPTS, FORMATTING_RULE
 from ..pipeline.scoring import COMPONENTS, DEFAULT_WEIGHTS
 from ..security import audit, editor, viewer
 
@@ -14,7 +16,8 @@ router = APIRouter(tags=["projects"])
 PROJECT_COLS = (
     "id, name, topic, topic_aspects, language, tone, max_length, prompt_template, prompt_version, generation_mode, publish_mode, window_hours, "
     "sim_threshold, topic_threshold, weights, context_items, context_sentences, min_items, auto_retry_unknown, show_sources, active, "
-    "content_profile, curated_window_hours, source_cooldown_hours, created_at"
+    "content_profile, curated_window_hours, source_cooldown_hours, instant_interest, instant_daily_limit, single_min_interest, "
+    "slot_min_interest, topic_aspects_auto, interest_criteria, reply_related_days, article_max_length, created_at"
 )
 
 
@@ -26,6 +29,8 @@ class ProjectBody(BaseModel):
     language: str = Field("ru", max_length=10)
     tone: str = Field("нейтральный, информативный", max_length=200)
     max_length: int = Field(900, ge=200, le=3500)
+    # Пост-разбор статьи (длинная статья из одного источника или статья в подборке) длиннее новости.
+    article_max_length: int = Field(1500, ge=300, le=3500)
     prompt_template: str = Field("", max_length=6000)
     generation_mode: Literal["llm", "extractive", "auto"] = "llm"
     publish_mode: Literal["review", "auto", "full_auto"] = "review"
@@ -43,6 +48,17 @@ class ProjectBody(BaseModel):
     content_profile: Literal["news", "curated", "mixed"] = "news"
     curated_window_hours: int = Field(336, ge=24, le=2160)
     source_cooldown_hours: int = Field(0, ge=0, le=168)
+    # Порог интересности (0–10) для публикации сразу после оценки; None — только по слотам расписания.
+    instant_interest: float | None = Field(None, ge=0, le=10)
+    instant_daily_limit: int = Field(3, ge=1, le=50)
+    # Новостной сюжет из меньшего числа материалов, чем min_items, публикуется при оценке не ниже порога; None — нет.
+    single_min_interest: float | None = Field(None, ge=0, le=10)
+    # Слот берёт сюжет, только если модель оценила его не ниже порога, иначе слот пустой; None — лучший из имеющихся.
+    slot_min_interest: float | None = Field(None, ge=0, le=10)
+    # Чем канал считает материал сильным и слабым; пусто — стандартные критерии модели.
+    interest_criteria: str = Field("", max_length=2000)
+    # Новый пост — ответ на связанный пост за последние N дней; 0 — не отвечать.
+    reply_related_days: int = Field(14, ge=0, le=60)
 
     @field_validator("weights")
     @classmethod
@@ -70,6 +86,12 @@ class ProjectBody(BaseModel):
         return out
 
 
+@router.get("/prompt-defaults")
+async def prompt_defaults(user=Depends(viewer)):
+    """Стандартные инструкции модели по формату поста: настройки показывают их, когда своя инструкция пуста."""
+    return {"formats": FORMAT_PROMPTS, "formatting": FORMATTING_RULE}
+
+
 @router.get("/projects")
 async def list_projects(user=Depends(viewer)):
     return await db.fetchall(f"SELECT {PROJECT_COLS} FROM projects ORDER BY id")
@@ -92,27 +114,47 @@ async def create_project(body: ProjectBody, user=Depends(editor)):
     row = await db.fetchone(
         f"INSERT INTO projects({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) RETURNING {PROJECT_COLS}", [d[c] for c in cols]
     )
+    if not body.topic_aspects and body.topic.strip():
+        await aspects.schedule(row["id"])
     await audit(user, "create", "project", row["id"], {"name": body.name})
     return row
 
 
 @router.put("/projects/{pid}")
 async def update_project(pid: int, body: ProjectBody, user=Depends(editor)):
-    old = await db.fetchone("SELECT topic, topic_aspects, prompt_template, prompt_version FROM projects WHERE id = %s", (pid,))
+    old = await db.fetchone(
+        "SELECT topic, topic_aspects, topic_aspects_auto, prompt_template, prompt_version, interest_criteria FROM projects WHERE id = %s", (pid,)
+    )
     if not old:
         raise HTTPException(404, "Проект не найден")
     d = body.model_dump()
+    old_aspects = list(old["topic_aspects"] or [])
+    edited = body.topic_aspects != old_aspects
+    new_aspects = body.topic_aspects
+    # Аспекты, составленные моделью для прежней темы, к новой не подходят: модель составит их заново.
+    if old["topic_aspects_auto"] and not edited and body.topic != old["topic"]:
+        new_aspects = []
+    d["topic_aspects_auto"] = old["topic_aspects_auto"] and not edited and bool(new_aspects)
+    regenerate = not new_aspects and bool(body.topic.strip()) and (body.topic != old["topic"] or edited)
     d["weights"] = Jsonb({**DEFAULT_WEIGHTS, **(d["weights"] or {})})
-    d["topic_aspects"] = Jsonb(d["topic_aspects"])
+    d["topic_aspects"] = Jsonb(new_aspects)
     d["prompt_version"] = old["prompt_version"] + (1 if body.prompt_template != old["prompt_template"] else 0)
     sets = [f"{k} = %s" for k in d]
-    topic_changed = body.topic != old["topic"] or body.topic_aspects != list(old["topic_aspects"] or [])
+    topic_changed = body.topic != old["topic"] or new_aspects != old_aspects
     if topic_changed:
         sets.append("topic_embedding = NULL")
     row = await db.fetchone(f"UPDATE projects SET {', '.join(sets)} WHERE id = %s RETURNING {PROJECT_COLS}", [*d.values(), pid])
     if topic_changed:
         # Тема изменилась — старые topic_score недействительны, пересчитываем и обновляем рейтинг сюжетов.
         await db.execute("UPDATE items SET topic_score = NULL WHERE project_id = %s", (pid,))
+        await jobs.enqueue("process_project", {"project_id": pid}, dedupe_key=f"process:{pid}")
+    if regenerate:
+        await aspects.schedule(pid, reset=True)
+    if body.interest_criteria.strip() != old["interest_criteria"].strip():
+        # Оценки по прежним критериям неверны: открытые сюжеты модель оценит заново на следующих проходах.
+        await db.execute(
+            "UPDATE clusters SET interest = NULL, interest_reason = NULL, interest_items = NULL WHERE project_id = %s AND state = 'open'", (pid,)
+        )
         await jobs.enqueue("process_project", {"project_id": pid}, dedupe_key=f"process:{pid}")
     await audit(user, "update", "project", pid)
     return row

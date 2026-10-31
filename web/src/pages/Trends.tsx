@@ -7,7 +7,7 @@ import { useAuth, useProject, useToast } from "../lib/context";
 import { ago, dateTime, plural } from "../lib/format";
 import { CLUSTER_STATE, CONTENT_KINDS, DRAFT_STATUS } from "../lib/labels";
 import type { Cluster, ClusterDetail } from "../lib/types";
-import { ArrivalStrip, Breakdown, Score } from "../components/charts";
+import { ArrivalStrip } from "../components/charts";
 import { Thumb } from "../components/Thumb";
 import { NoProject } from "../components/NoProject";
 import { Badge, Drawer, Empty, ErrorNote, PageHeader, Spinner, Tabs } from "../components/ui";
@@ -20,13 +20,13 @@ const TABS = [
 
 export default function Trends() {
   const { project, loading } = useProject();
+  const { can } = useAuth();
   const [params, setParams] = useSearchParams();
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("open");
   const [singles, setSingles] = useState(false);
   const [showOffTopic, setShowOffTopic] = useState(false);
   const [search, setSearch] = useState("");
-  const [sortBy, setSortBy] = useState<"score" | "interest" | "date" | "items" | "sources" | "topic_fit">("score");
-  const [minScore, setMinScore] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<"interest" | "date" | "items" | "sources" | "topic_fit">("interest");
   const [interestFilter, setInterestFilter] = useState<string>("all");
   const [onlyWithImages, setOnlyWithImages] = useState(false);
 
@@ -37,6 +37,16 @@ export default function Trends() {
   });
   const toast = useToast();
   const qc = useQueryClient();
+  const genClusterPost = useMutation({
+    mutationFn: (clusterId: number) => api<{ job_id: number }>(`/clusters/${clusterId}/generate`, { method: "POST" }),
+    onSuccess: () => {
+      toast("Генерация поста запущена", "info");
+      qc.invalidateQueries({ queryKey: ["clusters"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["generation-queue"] });
+    },
+    onError: (e: Error) => toast(e.message, "bad"),
+  });
   const clearAll = useMutation({
     mutationFn: () => api<{ deleted: number; ignored_items: number }>("/clusters", { method: "DELETE", params: { project_id: project!.id } }),
     onSuccess: ({ deleted, ignored_items }) => {
@@ -67,12 +77,6 @@ export default function Trends() {
     return (c.title || "").toLowerCase().includes(search.trim().toLowerCase());
   };
 
-  const scoreFilter = (c: Cluster) => {
-    if (minScore === "all") return true;
-    const target = Number(minScore) / 100;
-    return c.score != null && c.score >= target;
-  };
-
   const interestCheck = (c: Cluster) => {
     if (interestFilter === "all") return true;
     if (interestFilter === "rated") return c.interest != null;
@@ -92,7 +96,7 @@ export default function Trends() {
       const aVal = a.interest ?? -1;
       const bVal = b.interest ?? -1;
       if (bVal !== aVal) return bVal - aVal;
-      return (b.score ?? 0) - (a.score ?? 0);
+      return new Date(b.last_seen).getTime() - new Date(a.last_seen).getTime();
     }
     if (sortBy === "date") {
       return new Date(b.last_seen).getTime() - new Date(a.last_seen).getTime();
@@ -108,22 +112,20 @@ export default function Trends() {
       const bFit = b.score_breakdown?.topic_fit?.value ?? 0;
       return bFit - aFit;
     }
-    // По умолчанию: по весу NWS
-    return (b.score ?? 0) - (a.score ?? 0);
+    return (b.interest ?? -1) - (a.interest ?? -1);
   };
 
-  const isFiltered = search.trim() !== "" || minScore !== "all" || interestFilter !== "all" || onlyWithImages || sortBy !== "score";
+  const isFiltered = search.trim() !== "" || interestFilter !== "all" || onlyWithImages || sortBy !== "interest";
   const resetFilters = () => {
     setSearch("");
-    setMinScore("all");
     setInterestFilter("all");
     setOnlyWithImages(false);
-    setSortBy("score");
+    setSortBy("interest");
   };
 
   const allClusters = q.data ?? [];
   const baseTabRows = allClusters.filter(tabDef.match).filter(visible).filter(topicVisible);
-  const rows = [...baseTabRows.filter(searchFilter).filter(scoreFilter).filter(interestCheck).filter(imageFilter)].sort(sortFn);
+  const rows = [...baseTabRows.filter(searchFilter).filter(interestCheck).filter(imageFilter)].sort(sortFn);
 
   const counts = Object.fromEntries(
     TABS.map((t) => [
@@ -133,7 +135,6 @@ export default function Trends() {
         .filter(visible)
         .filter(topicVisible)
         .filter(searchFilter)
-        .filter(scoreFilter)
         .filter(interestCheck)
         .filter(imageFilter).length,
     ])
@@ -145,7 +146,7 @@ export default function Trends() {
     <div className="fadein">
       <PageHeader
         title="Сюжеты"
-        sub={`Материалы, объединённые по смыслу за последние ${project.window_hours} ч. Чем выше вес, тем сильнее сюжет подходит для публикации; нажмите на строку, чтобы увидеть из чего он сложился. Статус «Ждёт решения» означает, что система ничего не делает сама — нужно нажать «Создать пост» или «Исключить», либо дождаться планового запуска расписания.`}
+        sub={`Материалы, объединённые по смыслу за последние ${project.window_hours} ч. Сортируются по интересности для удобного отбора и быстрой публикации.`}
         actions={allClusters.length > 0 && <button className="btn btn-danger" disabled={clearAll.isPending} title="Опубликованные сюжеты и сюжеты с черновиками сохранятся" onClick={() => window.confirm("Удалить все неопубликованные сюжеты без связанных черновиков? Опубликованные сюжеты и сюжеты с черновиками сохранятся. Материалы останутся в базе, но не будут повторно собраны в сюжеты.") && clearAll.mutate()}><Trash2 size={15} />{clearAll.isPending ? "Очищаем…" : "Очистить все"}</button>}
       />
       <Tabs className="mb-2" tabs={TABS.map((t) => ({ id: t.id, label: t.label, count: counts[t.id] }))} value={tab} onChange={setTab} />
@@ -173,27 +174,11 @@ export default function Trends() {
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
             >
-              <option value="score">Вес (NWS)</option>
               <option value="interest">Интересность (LLM)</option>
               <option value="date">Свежие сначала</option>
               <option value="items">Больше материалов</option>
               <option value="sources">Больше источников</option>
               <option value="topic_fit">Близость к теме</option>
-            </select>
-          </div>
-
-          {/* Фильтр по NWS */}
-          <div className="flex items-center gap-1.5 text-[13px] text-muted">
-            <span className="shrink-0">Мин. вес:</span>
-            <select
-              className="field h-8 px-2 py-0 text-[13px] w-auto bg-surface"
-              value={minScore}
-              onChange={(e) => setMinScore(e.target.value)}
-            >
-              <option value="all">Все</option>
-              <option value="30">≥ 30</option>
-              <option value="50">≥ 50</option>
-              <option value="70">≥ 70</option>
             </select>
           </div>
 
@@ -266,7 +251,7 @@ export default function Trends() {
       {q.error && <ErrorNote error={q.error} />}
       {q.data && rows.length === 0 && (
         <Empty
-          title={isFiltered ? "Ничего не найдено" : tab === "open" ? "Новых сюжетов нет" : tab === "published" ? "Публикаций пока не было" : "Здесь пусто"}
+          title={isFiltered ? "Ничего не найдено" : tab === "open" ? "Сюжетов пока нет" : tab === "published" ? "Публикаций пока не было" : "Здесь пусто"}
           text={isFiltered ? "Попробуйте изменить параметры фильтрации или поиска." : hiddenOffTopic > 0 && !showOffTopic ? "Есть сюжеты ниже порога близости к теме. Включите «Показывать ниже порога темы», чтобы увидеть их." : tab === "open" ? <>Сюжет появляется, когда несколько материалов описывают одно событие. Подключите источники на странице <Link className="underline" to="/sources">«Источники»</Link> или импортируйте готовый набор.</> : tab === "published" ? "Сюжеты, по которым уже вышел пост, попадают сюда как история публикаций." : undefined}
           action={isFiltered ? <button className="btn btn-sm" onClick={resetFilters}><RotateCcw size={13} />Сбросить фильтры</button> : undefined}
         />
@@ -274,33 +259,29 @@ export default function Trends() {
       <ul>
         {rows.map((c) => (
           <li key={c.id} className="rule-b">
-            <button
+            <div
               onClick={() => setParams({ open: String(c.id) })}
-              className="w-full text-left grid grid-cols-1 sm:grid-cols-[112px_1fr] md:grid-cols-[112px_1fr_160px] gap-x-5 gap-y-2 items-center py-3.5 hover:bg-sunken/60 -mx-2 px-2"
-              style={{ borderRadius: 3 }}
+              className="w-full text-left grid grid-cols-1 sm:grid-cols-[70px_1fr] md:grid-cols-[70px_1fr_auto_160px] gap-x-5 gap-y-2 items-center py-3.5 hover:bg-sunken/60 -mx-2 px-2 rounded cursor-pointer"
             >
               <div className="flex flex-col gap-1 items-start">
-                <Score value={c.score} />
-                {c.interest != null && (
-                  <span
-                    className={`text-[11px] font-medium px-1.5 py-0.5 rounded leading-none ${
-                      c.interest >= 6
-                        ? "bg-ok/15 text-ok"
-                        : c.interest >= 3
-                        ? "bg-warn/15 text-warn"
-                        : "bg-bad/15 text-bad"
-                    }`}
-                    title={c.interest_reason ? `Оценка редактора (LLM): ${c.interest}/10\n${c.interest_reason}` : `Интересность: ${c.interest}/10`}
-                  >
-                    ★ {c.interest.toFixed(1)}
-                  </span>
-                )}
+                <span
+                  className={`font-mono text-[13px] font-semibold px-2.5 py-0.5 rounded-full border ${
+                    (c.interest ?? 0) >= 6
+                      ? "bg-ok/10 text-ok border-ok/30"
+                      : (c.interest ?? 0) >= 3
+                      ? "bg-warn/10 text-warn border-warn/30"
+                      : "bg-surface text-muted border-rule"
+                  }`}
+                  title={c.interest_reason ? `Интересность: ${c.interest}/10\n${c.interest_reason}` : `Интересность: ${c.interest ?? "—"}/10`}
+                >
+                  ★ {c.interest != null ? c.interest.toFixed(1) : "—"}
+                </span>
               </div>
               <span className="min-w-0 flex items-start gap-3.5">
                 {c.image_item_id && <Thumb src={`/items/${c.image_item_id}/image`} className="w-[88px] h-[58px] shrink-0 hidden sm:block" />}
                 <span className="min-w-0 flex-1">
-                  <span className="block font-serif text-[17px] font-medium leading-snug">{c.title || "Без названия"}</span>
-                  <span className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] text-muted mt-0.5">
+                  <span className="block font-sans text-[17.5px] font-medium leading-snug">{c.title || "Без названия"}</span>
+                  <span className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13.5px] text-muted mt-1">
                     {c.mode === "curated" && <span className="eyebrow">{CONTENT_KINDS[c.kind ?? "article"]}</span>}
                     <span>{c.item_count} {plural(c.item_count, "материал", "материала", "материалов")}</span>
                     <span>{c.source_count} {plural(c.source_count, "источник", "источника", "источников")}</span>
@@ -309,13 +290,26 @@ export default function Trends() {
                   </span>
                 </span>
               </span>
+              {can("editor") && c.state === "open" && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary shrink-0 self-center"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    genClusterPost.mutate(c.id);
+                  }}
+                  disabled={genClusterPost.isPending}
+                >
+                  + Создать пост
+                </button>
+              )}
               <div className="hidden md:flex flex-col items-end gap-1 justify-self-end">
                 <ArrivalStrip arrivals={c.arrivals} windowHours={project.window_hours} />
                 <span className="text-[10px] text-muted/70 tracking-tight" title={`Хронология публикаций за ${project.window_hours} ч: левее — раньше, правее — свежие`}>
                   хронология ({c.arrivals?.length ?? 0})
                 </span>
               </div>
-            </button>
+            </div>
           </li>
         ))}
       </ul>
@@ -354,8 +348,10 @@ function ClusterDrawer({ id, topicThreshold, onClose }: { id: number | null; top
         <div className="space-y-7">
           {c.image_item_id && <Thumb src={`/items/${c.image_item_id}/image`} className="w-full max-h-64" />}
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-            <Score value={c.score} width={140} />
             <Badge tone={CLUSTER_STATE[c.state].tone}>{CLUSTER_STATE[c.state].label}</Badge>
+            {c.interest != null && (
+              <span className="font-mono text-[13px] font-semibold text-accent">[★ {c.interest.toFixed(1)} / 10]</span>
+            )}
             <span className="text-[13px] text-muted">{dateTime(c.first_seen)} — {dateTime(c.last_seen)}</span>
           </div>
           {can("editor") && c.state !== "published" && (
@@ -373,19 +369,13 @@ function ClusterDrawer({ id, topicThreshold, onClose }: { id: number | null; top
           {c.interest != null && (
             <p className="hint">Интересность по мнению модели: <b>{c.interest.toFixed(1)} из 10</b>{c.interest_reason ? ` — ${c.interest_reason}` : ""}. Оценка приблизительная: при низкой пост не публикуется сам, а ждёт вашего решения.</p>
           )}
-          {c.score_breakdown && (
-            <section>
-              <h3 className="text-base font-semibold mb-3">Из чего сложился вес</h3>
-              <Breakdown parts={c.score_breakdown} />
-            </section>
-          )}
           {c.drafts.length > 0 && (
             <section>
               <h3 className="text-base font-semibold mb-2">Черновики по сюжету</h3>
               <ul>
                 {c.drafts.map((d) => (
                   <li key={d.id} className="rule-b py-2 flex items-center justify-between gap-3">
-                    <Link className="hover:underline font-serif truncate" to={`/drafts/${d.id}`}>{d.title || "Без заголовка"}</Link>
+                    <Link className="hover:underline font-sans truncate" to={`/drafts/${d.id}`}>{d.title || "Без заголовка"}</Link>
                     <Badge tone={DRAFT_STATUS[d.status].tone}>{DRAFT_STATUS[d.status].label}</Badge>
                   </li>
                 ))}

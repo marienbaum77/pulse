@@ -18,8 +18,9 @@ from ..images import normalize_image_url, feed_entry_image
 from ..netguard import guarded_client
 from ..providers import refresh_provider
 from ..textutil import item_hash, strip_html, utcnow
-from . import connectors
+from . import connectors, media, primary_links
 from .clustering_core import unit_vector
+from .connectors import google_news
 
 log = logging.getLogger("pulse.ingest")
 MAX_ENTRIES = 100
@@ -103,11 +104,15 @@ def parse_feed(content: bytes) -> list[dict]:
         if e.get("content"):
             body = e["content"][0].get("value", "")
         body = body or e.get("summary", "") or e.get("description", "")
-        out.append({
+        entry = {
             "title": title, "url": e.get("link", ""), "text": _strip_read_more_teaser(strip_html(body))[:MAX_TEXT],
             "published_at": entry_time(e), "image_url": feed_entry_image(e, body),
             "publisher_name": strip_html(e.get("source", {}).get("title", "")) or None,
-        })
+        }
+        links = primary_links.extract_from_html(body, entry["url"])
+        if links:
+            entry["meta"] = {"links": links}
+        out.append(entry)
     return out
 
 
@@ -124,7 +129,7 @@ async def fetch_feed(url: str, etag: str | None = None, last_modified: str | Non
     return parser(r.content), {"etag": r.headers.get("etag"), "last_modified": r.headers.get("last-modified")}
 
 
-def _extract_article(html: str, url: str) -> tuple[str, str | None]:
+def _extract_article(html: str, url: str, title: str = "") -> tuple[str, str | None, list[dict], dict]:
     extracted = trafilatura.extract(html, url=url, include_comments=False, include_tables=False, favor_precision=True)
     image = None
     try:
@@ -132,16 +137,60 @@ def _extract_article(html: str, url: str) -> tuple[str, str | None]:
         image = normalize_image_url(getattr(meta, "image", None), url)
     except Exception:
         pass
-    return " ".join((extracted or "").split())[:MAX_TEXT], image
+    try:
+        links = primary_links.extract_from_html(html, url)
+    except Exception:
+        links = []
+    try:
+        found = media.analyze(html, url, title)
+    except Exception:
+        found = {}
+    return " ".join((extracted or "").split())[:MAX_TEXT], image, links, found
 
 
-async def fetch_article(url: str) -> tuple[str, str | None]:
-    """Скачивает статью и возвращает (текст статьи, og:image)."""
-    page = await fetch_html(url)
+# Сайт закрыт для ботов (Cloudflare у openai.com отвечает 403 и браузерному User-Agent), гео-блок или лимит запросов.
+ARCHIVE_FALLBACK_STATUSES = {401, 403, 429, 451, 503}
+
+
+async def archived_html(url: str) -> tuple[str, str] | None:
+    """Последний снимок страницы в Wayback Machine (archive.org) без панели архива (id_): (html, исходный адрес).
+    Адрес — исходный, а не архивный: относительные ссылки и картинки статьи разбираются так же, как на сайте."""
+    r = await http_get(f"https://archive.org/wayback/available?{urlencode({'url': url})}", {"User-Agent": "PulseBot/1.0 (+self-hosted)"})
+    if r.status_code != 200:
+        return None
+    closest = ((r.json().get("archived_snapshots") or {}).get("closest") or {})
+    if not closest.get("available") or str(closest.get("status")) != "200" or not closest.get("timestamp"):
+        return None
+    page = await fetch_html(f"https://web.archive.org/web/{closest['timestamp']}id_/{url}")
+    return (page[0], url) if page else None
+
+
+async def fetch_html_or_archive(url: str) -> tuple[str, str] | None:
+    """fetch_html, а если сайт не отдаёт страницу ботам — её снимок из Wayback Machine. Свежую статью архив мог ещё
+    не сохранить: тогда ошибка сайта остаётся, и дозагрузка повторится через сутки, как при любом сбое."""
+    try:
+        return await fetch_html(url)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code not in ARCHIVE_FALLBACK_STATUSES:
+            raise
+        try:
+            archived = await archived_html(url)
+        except Exception as archive_error:
+            log.info("archive fallback for %s failed: %s", url, archive_error)
+            archived = None
+        if archived is None:
+            raise
+        log.info("article %s blocked (HTTP %s), using Wayback Machine snapshot", url, e.response.status_code)
+        return archived
+
+
+async def fetch_article(url: str, title: str = "") -> tuple[str, str | None, list[dict], dict]:
+    """Скачивает статью и возвращает (текст, og:image, первичные ссылки, медиа: первоисточник, картинки и видео из текста)."""
+    page = await fetch_html_or_archive(url)
     if page is None:
-        return "", None
+        return "", None, [], {}
     html, final_url = page
-    return await asyncio.to_thread(_extract_article, html, final_url)
+    return await asyncio.to_thread(_extract_article, html, final_url, title)
 
 
 async def fetch_html(url: str) -> tuple[str, str] | None:
@@ -212,18 +261,28 @@ async def _enrich_video(item: dict, result: dict, language: str) -> dict:
 
 
 async def _enrich_article(item: dict, semaphore: asyncio.Semaphore, language: str = "ru") -> dict:
-    result = {"id": item["id"], "title": item["title"], "status": item["status"], "cluster_id": item["cluster_id"], "article": None, "image": None, "error": None}
+    result = {"id": item["id"], "title": item["title"], "status": item["status"], "cluster_id": item["cluster_id"], "article": None, "image": None,
+              "links": [], "media": None, "error": None, "url": None}
     if item.get("kind") == "video":
         async with semaphore:
             return await _enrich_video(item, result, language)
     async with semaphore:
+        url = item["url"]
         try:
-            article, image = await fetch_article(item["url"])
+            if google_news.article_id(url):
+                # Ссылка Google News ведёт на заглушку: сначала узнаём адрес самой статьи, его же сохраняем в материал.
+                url = result["url"] = await google_news.resolve(url)
+                if not url:
+                    result["error"] = "Google News не отдал адрес статьи"
+                    return result
+            article, image, links, found = await fetch_article(url, item["title"])
         except Exception as e:
             log.info("article fetch failed for item %s: %s", item["id"], e)
             result["error"] = f"{type(e).__name__}: {e}"
             return result
     result["image"] = None if item.get("image_url") else image
+    result["links"] = links
+    result["media"] = found
     if len(article) < MIN_ARTICLE_TEXT_CHARS or len(article) <= len(item["text"].strip()):
         return result
     excerpt = _strip_read_more_teaser(item["text"].strip())
@@ -264,8 +323,22 @@ async def _run_article_enrichment(source_id: int, project_id: int, include_clust
     affected_clusters: set[int] = set()
     for result_index, r in enumerate(results):
         item_id, status, cluster_id, article, error = r["id"], r["status"], r["cluster_id"], r["article"], r["error"]
+        if r["url"]:
+            # Адрес статьи вместо ссылки Google News: по нему пост ссылается на источник. url_hash остаётся прежним —
+            # повтор той же записи в ленте по-прежнему узнаётся.
+            await db.execute("UPDATE items SET url = %s WHERE id = %s", (r["url"], item_id))
         if r["image"]:
             await db.execute("UPDATE items SET image_url = COALESCE(image_url, %s) WHERE id = %s", (r["image"], item_id))
+        if r["links"]:
+            # Ссылки со страницы статьи полнее, чем из анонса в ленте: заменяют их, но адрес самого материала остаётся первым.
+            row = await db.fetchone("SELECT url FROM items WHERE id = %s", (item_id,))
+            await db.execute(
+                "UPDATE items SET meta = meta || jsonb_build_object('links', %s::jsonb) WHERE id = %s",
+                (Jsonb(primary_links.merge(row["url"] if row else "", r["links"])), item_id),
+            )
+        if r["media"] is not None:
+            # Первоисточник и картинки статьи нужны при подготовке поста: страницу второй раз не скачиваем.
+            await db.execute("UPDATE items SET meta = meta || jsonb_build_object('media', %s::jsonb) WHERE id = %s", (Jsonb(r["media"]), item_id))
         if article:
             embedding = embeddings.get(result_index)
             if status == "clustered" and embedding is None:
@@ -332,6 +405,9 @@ async def insert_items(project_id: int, source_id: int | None, items: list[dict]
                 url = connectors.youtube.watch_url(vid)  # youtu.be/ID и watch?v=ID — одно видео, хеш должен совпасть
             kind = it.get("kind") or ("video" if vid else "article")
             meta = dict(it.get("meta") or {})
+            links = primary_links.merge(url, meta.get("links") or [])
+            if links:
+                meta["links"] = links
             published_at = it["published_at"]
             h = item_hash(url, it["title"], it.get("text", ""))
             if mode == "curated":

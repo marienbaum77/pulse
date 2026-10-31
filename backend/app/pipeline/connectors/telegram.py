@@ -4,7 +4,7 @@ from datetime import datetime
 
 from bs4 import BeautifulSoup
 
-from .. import ingest
+from .. import ingest, primary_links
 from ...images import normalize_image_url
 from ...textutil import utcnow
 
@@ -68,11 +68,33 @@ def parse_channel_page(page: str, channel: str) -> list[dict]:
         meta = {"channel": channel}
         if views is not None:
             meta["views"] = views
+        links = primary_links.extract_from_html(str(body), f"https://t.me/{msg['data-post']}")
+        if links:
+            meta["links"] = links
         out.append({
             "title": title, "url": f"https://t.me/{msg['data-post']}", "text": text[: ingest.MAX_TEXT], "published_at": published,
             "image_url": image, "publisher_name": f"@{channel}", "kind": "post", "meta": meta,
         })
     return out[-ingest.MAX_ENTRIES:]
+
+
+def parse_stats(page: str) -> dict[int, dict]:
+    """Просмотры и реакции каждого сообщения веб-превью: {message_id: {"views": int | None, "reactions": int}}.
+    Сообщения без текста (только медиа) тоже учитываются — у своих постов статистика нужна для всех."""
+    soup = BeautifulSoup(page, "html.parser")
+    out: dict[int, dict] = {}
+    for msg in soup.select(".tgme_widget_message[data-post]"):
+        try:
+            message_id = int(msg["data-post"].rsplit("/", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        views_tag = msg.select_one(".tgme_widget_message_views")
+        reactions = 0
+        for reaction in msg.select(".tgme_reaction"):
+            count = parse_views(reaction.get_text(" ", strip=True).split()[-1] if reaction.get_text(strip=True) else "")
+            reactions += count or 0
+        out[message_id] = {"views": parse_views(views_tag.get_text()) if views_tag else None, "reactions": reactions}
+    return out
 
 
 async def fetch(src: dict) -> tuple[list[dict], dict]:

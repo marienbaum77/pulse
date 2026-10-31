@@ -39,6 +39,8 @@ extraResources:
     to: repo/docker-compose.yml
   - from: ../docker-compose.prod.yml
     to: repo/docker-compose.prod.yml
+  - from: ../docker-compose.doh.yml
+    to: repo/docker-compose.doh.yml
   - from: ../.env.example
     to: repo/.env.example
   - from: ../.dockerignore

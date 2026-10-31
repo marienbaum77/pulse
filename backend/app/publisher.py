@@ -16,7 +16,8 @@ from dataclasses import dataclass
 
 import httpx
 
-from . import db, events
+from . import db, events, markup
+from .pipeline import media
 from .channel_secrets import decrypt_channel_config
 from .config import get_settings
 from .images import download_image
@@ -52,41 +53,72 @@ def sources_footer(citations: list[dict]) -> str:
     return f"\n\nИсточники: {links}"
 
 
-def render_telegram_html(title: str, body: str, citations: list[dict], limit: int = 3900) -> str:
-    """Текст для Telegram: без маркеров [n] внутри текста, со списком источников в конце (название — ссылка)."""
+def _telegram_footer(citations: list[dict], show_sources: bool, signature: str) -> str:
+    """Хвост поста: список источников (если не отключён в проекте) и подпись канала."""
+    footer = sources_footer(citations) if show_sources else ""
+    if signature.strip():
+        footer += "\n\n" + markup.to_telegram_html(signature.strip())
+    return footer
+
+
+def render_telegram_html(title: str, body: str, citations: list[dict], limit: int = 3900, *, show_sources: bool = True, signature: str = "") -> str:
+    """Текст для Telegram: без маркеров [n] внутри текста, со списком источников в конце (название — ссылка).
+    **Жирный** и [ссылки](https://…) из текста черновика становятся тегами Telegram."""
     esc = html.escape
     clean_title = strip_citations(title, {c["n"] for c in citations})
     head = f"<b>{esc(clean_title)}</b>\n\n" if clean_title else ""
-    footer = sources_footer(citations)
+    footer = _telegram_footer(citations, show_sources, signature)
     room = max(limit - len(head) - len(footer), 200)
     text = strip_citations(strip_source_footer(body), {c["n"] for c in citations})
-    while len(esc(text)) > room and len(text) > 50:
+    while len(markup.to_telegram_html(text)) > room and len(text) > 50:
         text = truncate(text, len(text) - max(50, len(text) // 10))
-    return head + esc(text) + footer
+    return head + markup.to_telegram_html(text) + footer
 
 
-def render_telegram_caption(title: str, body: str, citations: list[dict], limit: int = CAPTION_LIMIT) -> str:
+def render_telegram_caption(
+    title: str, body: str, citations: list[dict], limit: int = CAPTION_LIMIT, *, show_sources: bool = True, signature: str = ""
+) -> str:
     """Форматирует HTML-подпись для sendPhoto так, чтобы видимый текст укладывался в limit символов после парсинга HTML."""
     esc = html.escape
     clean_title = strip_citations(title, {c["n"] for c in citations})
     head = f"<b>{esc(clean_title)}</b>\n\n" if clean_title else ""
-    footer = sources_footer(citations)
+    footer = _telegram_footer(citations, show_sources, signature)
     visible_head = len(clean_title) + (2 if clean_title else 0)
     visible_footer = len(strip_html(footer))
     room = max(limit - visible_head - visible_footer, 100)
     text = strip_citations(strip_source_footer(body), {c["n"] for c in citations})
-    while len(text) > room and len(text) > 50:
+    while len(markup.visible(text)) > room and len(text) > 50:
         text = truncate(text, len(text) - max(20, len(text) // 10))
-    result = head + esc(text) + footer
+    result = head + markup.to_telegram_html(text) + footer
     while len(strip_html(result)) > limit and len(text) > 50:
         text = truncate(text, len(text) - 15)
-        result = head + esc(text) + footer
+        result = head + markup.to_telegram_html(text) + footer
     return result
+
+
+def _reply_parameters(draft: dict) -> dict | None:
+    """Ответ на прежний пост канала. allow_sending_without_reply: если тот пост удалили, новый всё равно выйдет."""
+    message_id = draft.get("reply_to_message_id")
+    return {"message_id": int(message_id), "allow_sending_without_reply": True} if message_id else None
+
+
+def _reply_form(draft: dict) -> dict:
+    """reply_parameters для multipart-запросов (sendPhoto, sendVideo): там сложные поля передаются строкой JSON."""
+    reply = _reply_parameters(draft)
+    return {"reply_parameters": json.dumps(reply)} if reply else {}
+
+
+def _post_options(channel: dict, draft: dict) -> dict:
+    """Настройки оформления: подвал источников задаёт проект, подпись — канал."""
+    return {"show_sources": draft.get("show_sources", True), "signature": str(channel["config"].get("signature") or "")}
 
 
 def classify_telegram(status: int, data: dict) -> SendResult:
     if status == 200 and data.get("ok"):
-        return SendResult("sent", external_id=str((data.get("result") or {}).get("message_id", "")))
+        result = data.get("result") or {}
+        if isinstance(result, list):  # sendMediaGroup: сообщение на каждый элемент альбома, ответы ссылаются на первое
+            result = result[0] if result else {}
+        return SendResult("sent", external_id=str(result.get("message_id", "")))
     desc = data.get("description") or f"HTTP {status}"
     if status == 429:
         return SendResult("retry", error=desc, retry_after=float((data.get("parameters") or {}).get("retry_after", 5)))
@@ -120,16 +152,29 @@ async def send_telegram(channel: dict, draft: dict, pub: dict, *, client: httpx.
     if not token or not cfg.get("chat_id"):
         return SendResult("failed", error="Не заданы токен бота (TELEGRAM_BOT_TOKEN) или chat_id канала")
     base = (cfg.get("api_base") or "https://api.telegram.org").rstrip("/")
-    text = render_telegram_html(draft["title"], draft["body"], draft["citations"])
+    opts = _post_options(channel, draft)
+    text = render_telegram_html(draft["title"], draft["body"], draft["citations"], **opts)
     message = {"chat_id": cfg["chat_id"], "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if reply := _reply_parameters(draft):
+        message["reply_parameters"] = reply
     image_url = draft.get("image_url")
     # Если клиент передан извне — переиспользуем; иначе создаём локальный.
     owns_client = client is None
     if owns_client:
         client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
     try:
+        # GIF — отдельным сообщением-анимацией: в альбом Telegram анимации не берёт.
+        animation = draft.get("video_url") and draft.get("video_kind") == "animation"
+        if draft.get("extra_images") and image_url and not animation:
+            res = await _send_album(client, base, token, cfg["chat_id"], text, draft, opts)
+            if res:
+                return res
+        if draft.get("video_url"):
+            res = await _send_with_video(client, base, token, cfg["chat_id"], text, draft, opts)
+            if res:
+                return res
         if image_url:
-            res = await _send_with_image(client, base, token, cfg["chat_id"], text, message, image_url, draft)
+            res = await _send_with_image(client, base, token, cfg["chat_id"], text, message, image_url, draft, opts)
             if res:
                 return res
         r = await client.post(f"{base}/bot{token}/sendMessage", json=message)
@@ -148,7 +193,83 @@ def _json(r: httpx.Response) -> dict:
         return {}
 
 
-async def _send_with_image(client: httpx.AsyncClient, base: str, token: str, chat_id: str, text: str, message: dict, image_url: str, draft: dict) -> SendResult | None:
+MEDIA_UPLOAD_TIMEOUT = httpx.Timeout(180.0, connect=10.0)  # ролик до 50 МБ загружается не за 30 секунд
+
+
+def _media_caption(text: str, draft: dict, opts: dict) -> str | None:
+    """Подпись к видео, GIF или альбому (до 1024 символов). None — текст не помещается: длинный пост
+    с обрезанной подписью хуже, чем полный текст с картинкой над ним."""
+    if len(strip_html(text)) <= CAPTION_LIMIT:
+        return text
+    caption = render_telegram_caption(draft["title"], draft["body"], draft["citations"], limit=CAPTION_LIMIT, **opts)
+    return caption if len(strip_html(caption)) <= CAPTION_LIMIT and len(strip_html(text)) <= 1200 else None
+
+
+async def _send_with_video(client: httpx.AsyncClient, base: str, token: str, chat_id: str, text: str, draft: dict, opts: dict) -> SendResult | None:
+    """Видео (sendVideo) или GIF (sendAnimation) с подписью одним сообщением. None — ролик не подошёл (подпись не
+    влезает в 1024 символа, файл не скачался, Telegram его отклонил): тогда пост уходит с картинкой."""
+    caption = _media_caption(text, draft, opts)
+    if caption is None:
+        return None
+    kind = draft.get("video_kind") or "video"
+    try:
+        data, ctype = await media.download_video(draft["video_url"], kind)
+    except Exception as e:
+        log.warning("%s download failed (%s): %s; sending with image", kind, draft["video_url"], e)
+        return None
+    method, field, name = ("sendAnimation", "animation", "animation.gif") if kind == "animation" else ("sendVideo", "video", "video.mp4")
+    if kind == "animation" and ctype == "image/gif" and (mp4 := await media.gif_to_mp4(data)):
+        data, ctype, name = mp4, "video/mp4", "animation.mp4"  # иначе Telegram сам пережмёт GIF с потерей качества
+    form = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML", **_reply_form(draft)}
+    if kind == "video":
+        form["supports_streaming"] = "true"
+    r = await client.post(f"{base}/bot{token}/{method}", data=form, files={field: (name, data, ctype)}, timeout=MEDIA_UPLOAD_TIMEOUT)
+    res = classify_telegram(r.status_code, _json(r))
+    if res.kind == "failed" and 400 <= r.status_code < 500:
+        log.warning("%s rejected (%s); sending with image", method, res.error)
+        return None  # 4xx — сообщение не создано, повтор с картинкой дубля не даст
+    return res
+
+
+async def _send_album(client: httpx.AsyncClient, base: str, token: str, chat_id: str, text: str, draft: dict, opts: dict) -> SendResult | None:
+    """Альбом (sendMediaGroup): видео, обложка и дополнительные иллюстрации, подпись — у первого элемента.
+    Элемент, который не скачался, пропускается; меньше двух элементов или отказ Telegram — None, пост уйдёт как обычно."""
+    caption = _media_caption(text, draft, opts)
+    if caption is None:
+        return None
+    entries: list[tuple[str, str]] = []
+    if draft.get("video_url") and draft.get("video_kind") != "animation":
+        entries.append(("video", draft["video_url"]))
+    entries += [("photo", url) for url in [draft["image_url"], *draft.get("extra_images", [])] if url]
+    files, items = {}, []
+    for kind, url in entries[:4]:
+        try:
+            data, ctype = await (media.download_video(url) if kind == "video" else download_image(url))
+        except Exception as e:
+            log.info("album item %s skipped: %s", url, e)
+            continue
+        key = f"f{len(items)}"
+        files[key] = (f"{key}.{'mp4' if kind == 'video' else 'jpg'}", data, ctype)
+        items.append({"type": kind, "media": f"attach://{key}", **({"supports_streaming": True} if kind == "video" else {})})
+    if len(items) < 2:
+        return None
+    items[0].update(caption=caption, parse_mode="HTML")
+    r = await client.post(
+        f"{base}/bot{token}/sendMediaGroup",
+        data={"chat_id": chat_id, "media": json.dumps(items, ensure_ascii=False), **_reply_form(draft)},
+        files=files,
+        timeout=MEDIA_UPLOAD_TIMEOUT,
+    )
+    res = classify_telegram(r.status_code, _json(r))
+    if res.kind == "failed" and 400 <= r.status_code < 500:
+        log.warning("sendMediaGroup rejected (%s); sending without album", res.error)
+        return None
+    return res
+
+
+async def _send_with_image(
+    client: httpx.AsyncClient, base: str, token: str, chat_id: str, text: str, message: dict, image_url: str, draft: dict, opts: dict | None = None
+) -> SendResult | None:
     """Короткий пост — фото с подписью; длинный — текст с превью картинки над ним.
     Telegram ограничивает подпись к фото 1024 символами после парсинга HTML-тегов,
     но предпросмотр ссылки позволяет сохранить длинный текст и картинку в одном сообщении.
@@ -159,7 +280,7 @@ async def _send_with_image(client: httpx.AsyncClient, base: str, token: str, cha
         # Если превышение небольшое (до 1200 видимых символов), аккуратно укладываем текст в 1024 символа,
         # чтобы сохранить публикацию полноценным фото вместо ссылки с превью
         if visible_len <= 1200:
-            fitted = render_telegram_caption(draft["title"], draft["body"], draft["citations"], limit=CAPTION_LIMIT)
+            fitted = render_telegram_caption(draft["title"], draft["body"], draft["citations"], limit=CAPTION_LIMIT, **(opts or {}))
             if len(strip_html(fitted)) <= CAPTION_LIMIT:
                 caption = fitted
                 visible_len = len(strip_html(caption))
@@ -182,28 +303,41 @@ async def _send_with_image(client: httpx.AsyncClient, base: str, token: str, cha
             return None
         return res
 
-    try:
-        data, ctype = await download_image(image_url)
-    except Exception as e:
-        result = classify_image_exception(e)
-        log.warning("image download failed (%s): %s", image_url, result.error)
-        return result
-    r = await client.post(
-        f"{base}/bot{token}/sendPhoto",
-        data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
-        files={"photo": ("image", data, ctype)},
-    )
-    res = classify_telegram(r.status_code, _json(r))
-    if res.kind == "failed" and 400 <= r.status_code < 500 and r.status_code != 429:
-        log.warning("sendPhoto rejected; publication failed rather than dropping its image: %s", res.error)
-    return res
+    # Обложка не скачалась или Telegram её не принял — пробуем остальные иллюстрации поста, затем текст без картинки.
+    # Сетевой сбой (retry) — не повод менять картинку: публикация повторится позже с той же обложкой.
+    for n, url in enumerate(dict.fromkeys([image_url, *draft.get("extra_images", [])])):
+        try:
+            data, ctype = await download_image(url)
+        except Exception as e:
+            result = classify_image_exception(e)
+            log.warning("image download failed (%s): %s", url, result.error)
+            if result.kind == "retry" and n == 0:
+                return result
+            continue
+        r = await client.post(
+            f"{base}/bot{token}/sendPhoto",
+            data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML", **_reply_form(draft)},
+            files={"photo": ("image", data, ctype)},
+        )
+        res = classify_telegram(r.status_code, _json(r))
+        if res.kind == "failed" and 400 <= r.status_code < 500 and r.status_code != 429:
+            log.warning("sendPhoto rejected %s (%s); trying the next image", url, res.error)
+            continue  # 4xx — сообщение не создано, следующая попытка дубля не даст
+        return res
+    log.warning("no usable image for draft %s; sending text only", draft.get("id"))
+    return None
 
 
 async def send_webhook(channel: dict, draft: dict, pub: dict) -> SendResult:
     """Получатель обязан дедуплицировать по заголовку Idempotency-Key — тогда повторы безопасны (at-least-once)."""
     cfg = channel["config"]
+    text = strip_citations(strip_source_footer(draft["body"]), {c["n"] for c in draft["citations"]})
+    opts = _post_options(channel, draft)
+    # body сохраняет разметку черновика (**жирный**, [текст](адрес)); body_plain — тот же текст без неё.
     body = json.dumps(
-        {"draft_id": draft["id"], "project_id": draft["project_id"], "kind": draft["kind"], "title": draft["title"], "body": strip_citations(strip_source_footer(draft["body"]), {c["n"] for c in draft["citations"]}), "citations": draft["citations"], "image_url": draft.get("image_url")},
+        {"draft_id": draft["id"], "project_id": draft["project_id"], "kind": draft["kind"], "title": draft["title"], "body": text,
+         "body_plain": markup.to_plain(text), "citations": draft["citations"], "image_url": draft.get("image_url"),
+         "video_url": draft.get("video_url"), **opts},
         ensure_ascii=False,
     ).encode()
     headers = {"Content-Type": "application/json", "Idempotency-Key": f"pulse-{draft['id']}-{channel['id']}"}
@@ -223,15 +357,18 @@ async def send_webhook(channel: dict, draft: dict, pub: dict) -> SendResult:
     return SendResult("failed", error=f"HTTP {r.status_code}")
 
 
-def render_vk_text(title: str, body: str, citations: list[dict]) -> str:
-    cleaned = strip_citations(strip_source_footer(body), {c["n"] for c in citations}).strip()
+def render_vk_text(title: str, body: str, citations: list[dict], *, show_sources: bool = True, signature: str = "") -> str:
+    """ВКонтакте не форматирует текст на стене: разметка черновика превращается в простой текст."""
+    cleaned = markup.to_plain(strip_citations(strip_source_footer(body), {c["n"] for c in citations})).strip()
     parts = []
     if title.strip():
         parts.append(title.strip())
     parts.append(cleaned)
     src_lines = [f"• {c['source']}: {c['url']}" for c in citations if c.get("url") and c.get("source")]
-    if src_lines:
+    if src_lines and show_sources:
         parts.append("Источники:\n" + "\n".join(src_lines))
+    if signature.strip():
+        parts.append(markup.to_plain(signature.strip()))
     return "\n\n".join(parts)
 
 
@@ -245,7 +382,7 @@ async def send_vk(channel: dict, draft: dict, pub: dict, *, client: httpx.AsyncC
     except (ValueError, TypeError):
         return SendResult("failed", error="Некорректный owner_id для VK")
 
-    text = render_vk_text(draft.get("title", ""), draft["body"], draft["citations"])
+    text = render_vk_text(draft.get("title", ""), draft["body"], draft["citations"], **_post_options(channel, draft))
     image_url = draft.get("image_url")
     base = (cfg.get("api_base") or "https://api.vk.com").rstrip("/")
     v = "5.199"
@@ -256,16 +393,17 @@ async def send_vk(channel: dict, draft: dict, pub: dict, *, client: httpx.AsyncC
 
     attachments = []
     try:
-        if image_url:
+        # Обложка и дополнительные иллюстрации — несколько фото в одном посте на стене.
+        for photo_url in ([image_url, *draft.get("extra_images", [])[:3]] if image_url else []):
             try:
-                img_data, ctype = await download_image(image_url)
+                img_data, ctype = await download_image(photo_url)
                 group_id = abs(owner_id)
                 srv_res = await client.post(f"{base}/method/photos.getWallUploadServer", data={"access_token": token, "v": v, "group_id": group_id})
                 upload_server = srv_res.json().get("response", {})
                 upload_url = upload_server.get("upload_url")
                 if upload_url:
                     ext = "png" if "png" in ctype else "jpg"
-                    files = {"photo": (f"cover.{ext}", img_data, ctype)}
+                    files = {"photo": (f"photo{len(attachments)}.{ext}", img_data, ctype)}
                     up_res = await client.post(upload_url, files=files)
                     up_data = up_res.json()
                     save_res = await client.post(
@@ -284,7 +422,7 @@ async def send_vk(channel: dict, draft: dict, pub: dict, *, client: httpx.AsyncC
                         p = photos[0]
                         attachments.append(f"photo{p['owner_id']}_{p['id']}")
             except Exception as e:
-                log.warning("failed to upload image to VK for draft %s: %s; posting text only", draft["id"], e)
+                log.warning("failed to upload image %s to VK for draft %s: %s; skipping it", photo_url, draft["id"], e)
 
         data = {
             "access_token": token,
@@ -326,7 +464,11 @@ async def send_discord(channel: dict, draft: dict, pub: dict, *, client: httpx.A
         return SendResult("failed", error="Не указан webhook_url для Discord")
 
     title = draft.get("title", "").strip()
+    opts = _post_options(channel, draft)
+    # Discord сам понимает **жирный** и [текст](адрес) — разметка черновика уходит как есть.
     raw_body = strip_citations(strip_source_footer(draft["body"]), {c["n"] for c in draft["citations"]}).strip()
+    if opts["signature"].strip():
+        raw_body = f"{raw_body}\n\n{opts['signature'].strip()}"
     image_url = draft.get("image_url")
 
     embed: dict = {
@@ -340,7 +482,7 @@ async def send_discord(channel: dict, draft: dict, pub: dict, *, client: httpx.A
 
     citations = draft.get("citations", [])
     src_links = [f"[{c['source']}]({c['url']})" for c in citations if c.get("url") and c.get("source")]
-    if src_links:
+    if src_links and opts["show_sources"]:
         embed["fields"] = [{"name": "Источники", "value": ", ".join(src_links)[:1024], "inline": False}]
 
     payload = {
@@ -452,11 +594,19 @@ async def process_one(senders: dict | None = None) -> bool:
         )
         return True
     channel = await db.fetchone("SELECT * FROM channels WHERE id = %s", (pub["channel_id"],))
-    project = await db.fetchone("SELECT auto_retry_unknown FROM projects WHERE id = %s", (draft["project_id"],))
+    project = await db.fetchone("SELECT auto_retry_unknown, show_sources FROM projects WHERE id = %s", (draft["project_id"],))
     if not channel or not channel["enabled"]:
         await db.execute("UPDATE publications SET status = 'cancelled', locked_until = NULL, error = 'Канал отключён или удалён' WHERE id = %s", (pub["id"],))
         return True
     channel = {**channel, "config": decrypt_channel_config(dict(channel["config"] or {}))}
+    draft = {**draft, "show_sources": project["show_sources"]}
+    if draft.get("reply_to_draft_id"):
+        # Связь хранится между черновиками, а номер сообщения у каждого канала свой.
+        prev = await db.fetchone(
+            "SELECT external_id FROM publications WHERE draft_id = %s AND channel_id = %s AND status = 'sent' AND external_id ~ '^[0-9]+$'",
+            (draft["reply_to_draft_id"], channel["id"]),
+        )
+        draft["reply_to_message_id"] = int(prev["external_id"]) if prev else None
     try:
         res = await senders[channel["type"]](channel, draft, pub)
     except Exception as e:

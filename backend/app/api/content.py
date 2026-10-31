@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from .. import db, events, jobs, publisher
 from ..images import ImageUnavailable, get_image
-from ..pipeline import drafts_service
+from ..pipeline import drafts_service, media
 from ..pipeline.generate import automatic_review, check_text, default_image_urls
 from ..pipeline.ingest import import_manual
 from ..pipeline.process import clear_clusters
@@ -161,6 +161,9 @@ class DraftPatch(BaseModel):
     title: str | None = Field(None, max_length=300)
     body: str | None = Field(None, max_length=8000)
     remove_image: bool = False
+    remove_video: bool = False  # пост выйдет с картинкой вместо видео
+    remove_extra_images: bool = False  # пост выйдет с одной картинкой, а не альбомом
+    remove_reply: bool = False  # пост выйдет отдельным сообщением, а не ответом на прежний
     image_item_id: int | None = None  # заменить картинку на картинку одного из источников этого черновика
 
 
@@ -236,6 +239,27 @@ async def draft_image(did: int, user=Depends(viewer)):
     return await _image_response(row["image_url"] if row else None)
 
 
+@router.get("/drafts/{did}/video")
+async def draft_video(did: int, user=Depends(viewer)):
+    """Видео черновика через API: политика безопасности интерфейса не пускает медиа со сторонних сайтов."""
+    row = await db.fetchone("SELECT video_url, video_kind FROM drafts WHERE id = %s", (did,))
+    if not row or not row["video_url"]:
+        raise HTTPException(404, "Видео нет")
+    try:
+        data, ctype = await media.download_video(row["video_url"], row["video_kind"])
+    except Exception:
+        raise HTTPException(404, "Видео недоступно")
+    return Response(data, media_type=ctype, headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox"})
+
+
+@router.get("/drafts/{did}/extra/{n}")
+async def draft_extra_image(did: int, n: int, user=Depends(viewer)):
+    """Дополнительная иллюстрация альбома по номеру (0 — первая после обложки)."""
+    row = await db.fetchone("SELECT extra_images FROM drafts WHERE id = %s", (did,))
+    images = list(row["extra_images"] or []) if row else []
+    return await _image_response(images[n] if 0 <= n < len(images) else None)
+
+
 @router.get("/drafts/{did}")
 async def get_draft(did: int, user=Depends(viewer)):
     d = await db.fetchone("SELECT * FROM drafts WHERE id = %s", (did,))
@@ -259,6 +283,10 @@ async def edit_draft(did: int, body: DraftPatch, user=Depends(editor)):
     new_title = body.title if body.title is not None else d["title"]
     fmt = (d["checks"] or {}).get("format", "news")
     checks = {**check_text(new_body, d["citations"]), "mode": d["params"].get("mode", "extractive"), "format": fmt, "edited": True}
+    # Найденные при генерации первичная ссылка и связанный пост правкой текста не отменяются.
+    for key in ("primary_link", "related"):
+        if (d["checks"] or {}).get(key) and not (key == "related" and body.remove_reply):
+            checks[key] = d["checks"][key]
     project = await db.fetchone("SELECT publish_mode, max_length, language FROM projects WHERE id = %s", (d["project_id"],))
     if project["publish_mode"] in ("auto", "full_auto"):
         checks["automatic_review"] = automatic_review(
@@ -275,8 +303,11 @@ async def edit_draft(did: int, body: DraftPatch, user=Depends(editor)):
         if new_image in await default_image_urls([new_image]):
             raise HTTPException(422, "Это служебная картинка сайта, а не иллюстрация статьи")
     row = await db.fetchone(
-        "UPDATE drafts SET title = COALESCE(%s, title), body = %s, checks = %s, image_url = %s, updated_at = now() WHERE id = %s RETURNING *",
-        (body.title, new_body, Jsonb(checks), new_image, did),
+        "UPDATE drafts SET title = COALESCE(%s, title), body = %s, checks = %s, image_url = %s, "
+        "video_url = CASE WHEN %s THEN NULL ELSE video_url END, "
+        "reply_to_draft_id = CASE WHEN %s THEN NULL ELSE reply_to_draft_id END, "
+        "extra_images = CASE WHEN %s THEN '[]'::jsonb ELSE extra_images END, updated_at = now() WHERE id = %s RETURNING *",
+        (body.title, new_body, Jsonb(checks), new_image, body.remove_video, body.remove_reply, body.remove_extra_images, did),
     )
     await audit(user, "edit", "draft", did)
     return row

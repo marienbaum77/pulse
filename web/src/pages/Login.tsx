@@ -34,11 +34,11 @@ export default function Login() {
             <rect width="32" height="32" rx="5" fill="var(--brand-ink)" />
             <path d="M4 17h6l3-8 5 15 3-7h7" fill="none" stroke="var(--brand)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          <span className="font-serif text-2xl font-semibold">Pulse</span>
+          <span className="font-sans text-2xl font-bold tracking-tight">Pulse</span>
         </div>
         <div className="max-w-[30ch]">
-          <p className="font-serif text-[34px] leading-[1.15] font-semibold">Из потока новостей — в один проверенный пост.</p>
-          <p className="mt-5 opacity-80 leading-relaxed">Собирает источники, находит сюжеты, оценивает их вес и готовит черновик со ссылками. Решение о публикации остаётся за редактором.</p>
+          <p className="font-sans text-[34px] leading-[1.15] font-bold tracking-tight">Из потока новостей — в один проверенный пост.</p>
+          <p className="mt-5 opacity-80 leading-relaxed">Собирает источники, находит сюжеты, оценивает их интересность и готовит черновик со ссылками. Решение о публикации остаётся за редактором.</p>
         </div>
         <p className="text-sm opacity-60">Разворачивается на вашем сервере. Модели — локальные или любые OpenAI-совместимые.</p>
       </section>

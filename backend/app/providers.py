@@ -274,27 +274,29 @@ _EMBED_FAMILIES = frozenset({
 })
 
 
+# Распознавание речи, синтез голоса и фильтры промптов — не модели для текста постов (Groq отдаёт их в общем /models).
+_NOT_TEXT_NAME = re.compile(r"whisper|orpheus|(?:^|[-_/])tts(?:[-_/]|$)|playai|distil-whisper|prompt[-_]?guard|safeguard|llama[-_]?guard", re.I)
+
+
 def classify_model(model_id: str, *, family: str | None = None, families: list[str] | None = None) -> str:
-    """'embed' | 'chat' — по имени и семейству Ollama. Эмбеддинг-модели не годятся для чата и наоборот."""
+    """'embed' | 'chat' | 'other' — по имени и семейству Ollama. Эмбеддинг-модели не годятся для чата и наоборот,
+    'other' (речь, голос, фильтры промптов) не годятся ни для того, ни для другого."""
     name = (model_id or "").strip()
     base = name.split(":")[0]
     fams = {*(families or []), *( [family] if family else [] )}
     fams = {f.lower() for f in fams if f}
     if fams & _EMBED_FAMILIES or _EMBED_NAME.search(name) or _EMBED_NAME.search(base):
         return "embed"
+    if _NOT_TEXT_NAME.search(name):
+        return "other"
     return "chat"
 
 
-async def list_remote_models() -> list[dict]:
-    """Список моделей с пометкой kind=embed|chat. Предпочитает нативный Ollama /api/tags."""
-    s = get_settings()
-    if s.llm_provider != "openai":
-        return []
+async def _models_at(base_url: str, api_key: str) -> list[dict]:
+    """Модели одного сервера с пометкой kind. Предпочитает нативный Ollama /api/tags (там есть семейство модели)."""
     timeout = httpx.Timeout(30.0, connect=10.0)
-    native = _native_base(s.llm_base_url)
-    # Ollama: /api/tags даёт family — надёжнее, чем /v1/models
     try:
-        async with httpx.AsyncClient(base_url=native, timeout=timeout) as client:
+        async with httpx.AsyncClient(base_url=_native_base(base_url), timeout=timeout) as client:
             r = await client.get("/api/tags")
             if r.status_code == 200:
                 out = []
@@ -308,13 +310,33 @@ async def list_remote_models() -> list[dict]:
                 if out:
                     return out
     except Exception:
-        log.debug("ollama /api/tags unavailable, falling back to /v1/models", exc_info=True)
-
-    async with httpx.AsyncClient(base_url=s.llm_base_url.rstrip("/"), headers={"Authorization": f"Bearer {s.llm_api_key}"}, timeout=timeout) as client:
+        log.debug("ollama /api/tags unavailable at %s, falling back to /v1/models", base_url, exc_info=True)
+    async with httpx.AsyncClient(base_url=base_url.rstrip("/"), headers={"Authorization": f"Bearer {api_key}"}, timeout=timeout) as client:
         r = await client.get("/models")
         r.raise_for_status()
         data = r.json().get("data") or []
         return [{"id": m["id"], "kind": classify_model(m["id"]), "owned_by": m.get("owned_by")} for m in data if m.get("id")]
+
+
+async def list_remote_models() -> list[dict]:
+    """Чат-модели — с сервера генерации (LLM_BASE_URL), embedding-модели — с сервера эмбеддингов (EMBED_BASE_URL,
+    по умолчанию Ollama из стека). Раньше список брался только с первого: при генерации через Groq в нём не было
+    ни одной embedding-модели, и выбор в «Системе» не сохранялся."""
+    s = get_settings()
+    if s.llm_provider != "openai":
+        return []
+    chat_side = await _models_at(s.llm_base_url, s.llm_api_key)
+    embed_base = s.embed_base_url or s.llm_base_url
+    if embed_base.rstrip("/") == s.llm_base_url.rstrip("/"):
+        embed_side = [m for m in chat_side if m["kind"] == "embed"]
+    else:
+        try:
+            embed_side = [m for m in await _models_at(embed_base, s.embed_api_key or s.llm_api_key) if m["kind"] == "embed"]
+        except Exception:
+            log.warning("embedding models list unavailable at %s", embed_base, exc_info=True)
+            embed_side = []
+    # Чат-модель с сервера эмбеддингов не предлагаем: запросы генерации всё равно уходят на LLM_BASE_URL.
+    return [m for m in chat_side if m["kind"] == "chat"] + embed_side
 
 
 async def pull_remote_model(name: str) -> dict:
@@ -322,7 +344,8 @@ async def pull_remote_model(name: str) -> dict:
     s = get_settings()
     if s.llm_provider != "openai":
         raise LLMUnavailable("Скачивание моделей доступно только при LLM_PROVIDER=openai (Ollama)")
-    base = _native_base(s.llm_base_url)
+    # Ollama стека — сервер эмбеддингов, если он задан отдельно: облачный LLM_BASE_URL (Groq) модели не скачивает.
+    base = _native_base(s.embed_base_url or s.llm_base_url)
     timeout = httpx.Timeout(600.0, connect=10.0)
     async with httpx.AsyncClient(base_url=base, timeout=timeout) as client:
         r = await client.post("/api/pull", json={"name": name, "stream": False})

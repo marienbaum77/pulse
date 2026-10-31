@@ -1,20 +1,21 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth, useProject, useToast } from "../lib/context";
-import { CONTENT_PROFILES, SCORE_HINTS, SCORE_LABELS } from "../lib/labels";
+import { CONTENT_PROFILES } from "../lib/labels";
 import type { Project, ProjectInput } from "../lib/types";
-import { Field, PageHeader, Spinner, Toggle } from "../components/ui";
+import { Field, NumberInput, PageHeader, Spinner, Toggle } from "../components/ui";
 
 const BLANK: ProjectInput = {
-  name: "", topic: "", topic_aspects: [], language: "ru", tone: "нейтральный, информативный", max_length: 900, prompt_template: "",
+  name: "", topic: "", topic_aspects: [], language: "ru", tone: "нейтральный, информативный", max_length: 900, article_max_length: 1500, prompt_template: "",
   generation_mode: "llm", publish_mode: "review", window_hours: 48, sim_threshold: 0.72, topic_threshold: 0.4,
   weights: { coverage: 0.15, authority: 0.075, freshness: 0.1, velocity: 0.075, topic_fit: 0.6 },
   context_items: 6, context_sentences: 3, min_items: 2, auto_retry_unknown: false, show_sources: true, active: true,
   content_profile: "news", curated_window_hours: 336, source_cooldown_hours: 0,
+  instant_interest: null, instant_daily_limit: 3, single_min_interest: null, slot_min_interest: null, interest_criteria: "", reply_related_days: 14,
 };
-const toInput = (p: Project): ProjectInput => { const { id: _id, prompt_version: _v, ...rest } = p; return rest; };
+const toInput = (p: Project): ProjectInput => { const { id: _id, prompt_version: _v, topic_aspects_auto: _a, ...rest } = p; return rest; };
 
 export default function ProjectSettings() {
   const { project, loading, setProjectId } = useProject();
@@ -30,6 +31,11 @@ export default function ProjectSettings() {
     if (creating) setF(BLANK);
     else if (project) setF(toInput(project));
   }, [creating, project?.id, project?.prompt_version]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Аспекты модель составляет в фоне после сохранения: подставляем их, если поле в форме всё ещё пустое.
+  const aspectsKey = project?.topic_aspects.join("\n") ?? "";
+  useEffect(() => {
+    if (!creating && project?.topic_aspects_auto) setF((x) => (x.topic_aspects.some((a) => a.trim()) ? x : { ...x, topic_aspects: project.topic_aspects }));
+  }, [aspectsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = useMutation({
     mutationFn: () => (creating ? api<Project>("/projects", { method: "POST", body: f }) : api<Project>(`/projects/${project!.id}`, { method: "PUT", body: f })),
@@ -40,6 +46,9 @@ export default function ProjectSettings() {
     },
     onError: (e: Error) => toast(e.message, "bad"),
   });
+  // Стандартная инструкция видна в пустом поле: иначе непонятно, по каким правилам пишет модель.
+  const defaults = useQuery({ queryKey: ["prompt-defaults"], queryFn: () => api<{ formats: Record<string, string> }>("/prompt-defaults"), staleTime: Infinity });
+  const defaultPrompt = defaults.data?.formats[f.content_profile === "curated" ? "article" : "news"] ?? "";
   const del = useMutation({
     mutationFn: () => api(`/projects/${project!.id}`, { method: "DELETE" }),
     onSuccess: () => { toast("Проект удалён"); qc.invalidateQueries(); nav("/"); },
@@ -48,24 +57,22 @@ export default function ProjectSettings() {
 
   if (loading) return <Spinner />;
   const set = <K extends keyof ProjectInput>(k: K, v: ProjectInput[K]) => setF((x) => ({ ...x, [k]: v }));
-  const setW = (k: string, v: number) => setF((x) => ({ ...x, weights: { ...x.weights, [k]: v } }));
   const ro = !can("editor");
-  const num = (v: string, min: number, max: number, fallback: number) => Math.max(min, Math.min(max, Number(v) || fallback));
 
   return (
     <div className="fadein max-w-[860px]">
       <PageHeader
         title={creating ? "Новый проект" : "Настройки проекта"}
-        sub={<>Тема, правила кластеризации и оценки сюжетов, стиль текста и режим публикации. Изменения действуют на новые материалы и следующие генерации.{!creating && project && <span className="block mt-1 text-[13px]">Номер проекта для скриптов: <b className="num">{project.id}</b></span>}</>}
+        sub={<>Тема, правила кластеризации и отбора сюжетов, стиль текста и режим публикации. Изменения действуют на новые материалы и следующие генерации.{!creating && project && <span className="block mt-1 text-[13px]">Номер проекта для скриптов: <b className="num">{project.id}</b></span>}</>}
         actions={!creating && can("editor") && <button className="btn" onClick={() => setParams({ new: "1" })}>Новый проект</button>}
       />
       <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }} className="space-y-12">
         <Section title="Основное">
           <Field label="Название"><input className="field" required value={f.name} onChange={(e) => set("name", e.target.value)} disabled={ro} /></Field>
-          <Field label="Тема" hint="Одно-два предложения. Сюжеты, близкие по смыслу к теме, получают больший вес.">
+          <Field label="Тема" hint="Одно-два предложения: фокус и область интересов проекта для отбора новостей.">
             <textarea className="field" rows={3} value={f.topic} onChange={(e) => set("topic", e.target.value)} disabled={ro} placeholder="Например: базы данных, облачная инфраструктура, ИИ и ИТ-инциденты" />
           </Field>
-          <Field label="Аспекты темы" hint={<>Каждый аспект — отдельная фраза с новой строки. Материал считается тематичным, если его заголовок близок хотя бы к одному аспекту; близость сюжета — среднее по его материалам. Пусто — аспекты разбираются из строки «Тема» по запятым. Оставляйте 5–10 конкретных аспектов и избегайте слов-ловушек («инциденты», «новости»).</>}>
+          <Field label="Аспекты темы" hint={<>Каждый аспект — отдельная фраза с новой строки. Материал считается тематичным, если его заголовок близок хотя бы к одному аспекту; близость сюжета — среднее по его материалам. Пусто — после сохранения аспекты составит языковая модель по теме (без модели — разбор строки «Тема» по запятым). Свои аспекты: 5–10 конкретных фраз без слов-ловушек («инциденты», «новости»).</>}>
             <textarea
               className="field font-mono text-[13px]"
               rows={6}
@@ -74,6 +81,12 @@ export default function ProjectSettings() {
               disabled={ro}
               placeholder={"базы данных и СУБД\nоблачные сервисы и инфраструктура\nискусственный интеллект и машинное обучение\nразработка и программирование\nкибербезопасность\nгаджеты и потребительская электроника"}
             />
+            {!creating && project?.topic_aspects_auto && f.topic_aspects.join("\n") === project.topic_aspects.join("\n") && (
+              <p className="hint mt-1.5">
+                Составлены моделью по теме и составятся заново при её смене; правка вручную это отключит.{" "}
+                {!ro && <button type="button" className="underline" onClick={() => set("topic_aspects", [])}>Составить заново</button>}
+              </p>
+            )}
           </Field>
           <Field label="Тип канала" hint={<>{CONTENT_PROFILES[f.content_profile].hint} Смена типа действует на материалы, собранные после сохранения.</>}>
             <select className="field max-w-[420px]" value={f.content_profile} onChange={(e) => set("content_profile", e.target.value as ProjectInput["content_profile"])} disabled={ro}>
@@ -95,18 +108,22 @@ export default function ProjectSettings() {
                 <option value="llm">Языковая модель всегда</option>
               </select>
             </Field>
-            <Field label="Максимальная длина, символов"><input className="field num" type="number" min={200} max={3500} value={f.max_length} onChange={(e) => set("max_length", num(e.target.value, 200, 3500, 900))} disabled={ro} /></Field>
+            <Field label="Максимальная длина, символов"><NumberInput min={200} max={3500} fallback={900} value={f.max_length} onChange={(v) => set("max_length", v)} disabled={ro} /></Field>
+            <Field label="Длина разбора статьи, символов" hint="Аналитику и лонгриды (статья из одного источника длиннее 6000 знаков) модель читает целиком и пересказывает разбором, а не заметкой по первым абзацам. Тот же лимит — у статей в подборке."><NumberInput min={300} max={3500} fallback={1500} value={f.article_max_length} onChange={(v) => set("article_max_length", v)} disabled={ro} /></Field>
             <Field label="Язык"><input className="field" value={f.language} onChange={(e) => set("language", e.target.value)} disabled={ro} /></Field>
             <Field label="Тон" hint="Стиль общения модели: нейтральный, деловой, разговорный и т.п. Учитывается при генерации моделью и обязательном переводе."><input className="field" value={f.tone} onChange={(e) => set("tone", e.target.value)} disabled={ro} /></Field>
           </div>
           {(f.generation_mode === "llm" || f.generation_mode === "auto") && (
             <>
-              <Field label="Инструкция для модели" hint={<>Пусто — используется стандартная: краткий заголовок одним предложением, продолжение — в тексте, ссылки [1], [2] только в тексте; пост пишется на заданном языке. Можно подставлять <code>{"{language}"}</code>, <code>{"{tone}"}</code>, <code>{"{topic}"}</code>, <code>{"{max_length}"}</code>. Каждое изменение увеличивает версию промпта, она сохраняется в черновиках.</>}>
-                <textarea className="field font-mono text-[13px]" rows={7} value={f.prompt_template} onChange={(e) => set("prompt_template", e.target.value)} disabled={ro} />
+              <Field label="Инструкция для модели" hint={<>Пусто — используется стандартная, она показана в поле серым{f.content_profile !== "news" ? " (для статей; у видео и постов своя)" : ""}. Своя инструкция заменяет стандартные для всех видов материалов. Можно подставлять <code>{"{language}"}</code>, <code>{"{tone}"}</code>, <code>{"{topic}"}</code>, <code>{"{max_length}"}</code>, <code>{"{formatting}"}</code> (правило про **жирный** из стандартной инструкции). Каждое изменение увеличивает версию промпта, она сохраняется в черновиках.</>}>
+                <textarea className="field font-mono text-[13px]" rows={f.prompt_template.trim() ? 7 : 12} value={f.prompt_template} onChange={(e) => set("prompt_template", e.target.value)} disabled={ro} placeholder={defaultPrompt} />
               </Field>
+              {!ro && !f.prompt_template.trim() && defaultPrompt && (
+                <button type="button" className="btn btn-sm -mt-3" onClick={() => set("prompt_template", defaultPrompt)}>Взять стандартную за основу</button>
+              )}
               <div className="grid sm:grid-cols-2 gap-5">
-                <Field label="Материалов в контексте" hint="Сколько репрезентативных материалов сюжета видит модель."><input className="field num" type="number" min={1} max={15} value={f.context_items} onChange={(e) => set("context_items", num(e.target.value, 1, 15, 6))} disabled={ro} /></Field>
-                <Field label="Предложений из материала" hint="Берутся ближайшие к смыслу сюжета — так контекст короче, а источник каждого факта известен."><input className="field num" type="number" min={1} max={8} value={f.context_sentences} onChange={(e) => set("context_sentences", num(e.target.value, 1, 8, 3))} disabled={ro} /></Field>
+                <Field label="Материалов в контексте" hint="Сколько репрезентативных материалов сюжета видит модель."><NumberInput min={1} max={15} fallback={6} value={f.context_items} onChange={(v) => set("context_items", v)} disabled={ro} /></Field>
+                <Field label="Предложений из материала" hint="Берутся ближайшие к смыслу сюжета — так контекст короче, а источник каждого факта известен."><NumberInput min={1} max={8} fallback={3} value={f.context_sentences} onChange={(v) => set("context_sentences", v)} disabled={ro} /></Field>
               </div>
             </>
           )}
@@ -115,35 +132,36 @@ export default function ProjectSettings() {
         <Section title="Поиск сюжетов">
           {f.content_profile !== "news" && (
             <Field label="Сколько дней подборочный материал остаётся кандидатом" hint="Видео и статьи не устаревают за двое суток, как новости: кандидат ждёт публикации весь этот срок, а свежесть падает вдвое каждую четверть срока. Окно и минимум материалов ниже действуют только на новостные сюжеты.">
-              <input className="field num max-w-[160px]" type="number" min={1} max={90} value={Math.round(f.curated_window_hours / 24)} onChange={(e) => set("curated_window_hours", num(e.target.value, 1, 90, 14) * 24)} disabled={ro} />
+              <NumberInput className="max-w-[160px]" min={1} max={90} fallback={14} value={Math.round(f.curated_window_hours / 24)} onChange={(v) => set("curated_window_hours", v * 24)} disabled={ro} />
             </Field>
           )}
           <div className="grid sm:grid-cols-2 gap-5">
             <Field label="Окно, часов" hint="Материалы группируются в сюжет, если вышли в пределах окна.">
-              <input className="field num" type="number" min={1} max={720} value={f.window_hours} onChange={(e) => set("window_hours", num(e.target.value, 1, 720, 48))} disabled={ro} />
+              <NumberInput min={1} max={720} fallback={48} value={f.window_hours} onChange={(v) => set("window_hours", v)} disabled={ro} />
             </Field>
             <Field label="Минимум материалов в сюжете" hint="По умолчанию 2: одиночные заметки не идут в автопостинг и дайджесты. Поставьте 1, если нужны и одиночные материалы — тогда имеет смысл поднять авторитетность источников, иначе в канал попадёт всё подряд.">
-              <input className="field num" type="number" min={1} max={50} value={f.min_items} onChange={(e) => set("min_items", num(e.target.value, 1, 50, 2))} disabled={ro} />
+              <NumberInput min={1} max={50} fallback={2} value={f.min_items} onChange={(v) => set("min_items", v)} disabled={ro} />
             </Field>
           </div>
+          {f.min_items > 1 && (
+            <div>
+              <Toggle checked={f.single_min_interest != null} onChange={(v) => set("single_min_interest", v ? 7 : null)} label="Пропускать одиночные сюжеты с высокой интересностью" />
+              <p className="hint mt-1.5 max-w-[70ch]">Новостной сюжет, в котором меньше материалов, чем задано выше, всё равно идёт в публикацию, если языковая модель оценила его не ниже порога. Мелочь из одного источника по-прежнему отсекается. Нужна чат-модель.</p>
+              {f.single_min_interest != null && (
+                <div className="mt-4">
+                  <Field label="Порог интересности для одиночного сюжета, из 10">
+                    <NumberInput className="max-w-[160px]" min={0} max={10} step={0.5} fallback={7} value={f.single_min_interest} onChange={(v) => set("single_min_interest", v)} disabled={ro} />
+                  </Field>
+                </div>
+              )}
+            </div>
+          )}
           <Field label={`Порог сходства: ${f.sim_threshold.toFixed(2)}`} hint="Выше — строже: сюжеты мельче и чище. Ниже — крупнее, но растёт риск склеить разные события. Значение подбирают на размеченных данных: scripts/eval_clustering.py.">
             <input type="range" min={0.3} max={0.95} step={0.01} className="w-full accent-[var(--brand)]" value={f.sim_threshold} onChange={(e) => set("sim_threshold", Number(e.target.value))} disabled={ro} />
           </Field>
           <Field label={`Минимальная близость к теме: ${f.topic_threshold.toFixed(2)}`} hint="Близость сюжета — среднее по его материалам: насколько заголовки близки к аспектам темы. Это косинусное сходство, а не вероятность; сверяйте порог с карточкой сюжета. Поставьте 0, чтобы отключить фильтр.">
             <input type="range" min={0} max={0.8} step={0.01} className="w-full accent-[var(--brand)]" value={f.topic_threshold} onChange={(e) => set("topic_threshold", Number(e.target.value))} disabled={ro} />
           </Field>
-        </Section>
-
-        <Section title="Вес сюжета (NWS)">
-          <div className="space-y-5">
-            {Object.keys(SCORE_LABELS).map((k) => (
-              <div key={k} className="grid sm:grid-cols-[220px_1fr_48px] items-center gap-x-5 gap-y-1">
-                <div><span className="label mb-0">{SCORE_LABELS[k]}</span><span className="hint block">{SCORE_HINTS[k]}</span></div>
-                <input type="range" min={0} max={1} step={0.05} className="w-full accent-[var(--brand)]" value={f.weights[k] ?? 0} onChange={(e) => setW(k, Number(e.target.value))} disabled={ro} aria-label={SCORE_LABELS[k]} />
-                <span className="num text-right">{(f.weights[k] ?? 0).toFixed(2)}</span>
-              </div>
-            ))}
-          </div>
         </Section>
 
         <Section title="Публикация">
@@ -164,8 +182,46 @@ export default function ProjectSettings() {
             </select>
           </Field>
           <Field label="Пауза между постами из одного источника, часов" hint="0 — без ограничений. Например, 12: если YouTube-канал выложил пять видео сразу, в канал попадёт одно, следующее — не раньше чем через 12 часов, а слоты займут другие источники.">
-            <input className="field num max-w-[160px]" type="number" min={0} max={168} value={f.source_cooldown_hours} onChange={(e) => set("source_cooldown_hours", Math.max(0, Math.min(168, Number(e.target.value) || 0)))} disabled={ro} />
+            <NumberInput className="max-w-[160px]" min={0} max={168} fallback={0} value={f.source_cooldown_hours} onChange={(v) => set("source_cooldown_hours", v)} disabled={ro} />
           </Field>
+          <div>
+            <Toggle checked={f.show_sources} onChange={(v) => set("show_sources", v)} label="Список источников в конце поста" />
+            <p className="hint mt-1.5 max-w-[70ch]">Строка «Источники: …» со ссылками на материалы. Выключите, если пост и так ведёт на первоисточник строкой «👉» или ссылка не нужна. Подпись канала задаётся в «Каналы и расписание».</p>
+          </div>
+          <Field label="Отвечать на связанные посты за последние, дней" hint="Пост-продолжение выходит в Telegram ответом (reply) на прежний пост: обновление того же сюжета, тот же репозиторий или первоисточник, близкая тема с общим именем в заголовке. Связь ищется без языковой модели. 0 — всегда отдельным сообщением.">
+            <NumberInput className="max-w-[160px]" min={0} max={60} fallback={14} value={f.reply_related_days} onChange={(v) => set("reply_related_days", v)} disabled={ro} />
+          </Field>
+          <Field label="Критерии интересности" hint="Чем ваш канал считает материал сильным, а чем — слабым. Заменяют стандартные критерии модели («важные события, громкие релизы»). После изменения открытые сюжеты будут оценены заново. Пусто — стандартные критерии.">
+            <textarea
+              className="field text-[13px]" rows={4} value={f.interest_criteria} maxLength={2000} onChange={(e) => set("interest_criteria", e.target.value)} disabled={ro}
+              placeholder={"Высоко: инструменты и модели, которые можно попробовать сегодня; open-source репозитории; конкретные цифры (цена, звёзды, бенчмарки).\nНизко: пресс-релизы, корпоративные назначения, мнения без фактов, отчёты о рынке."}
+            />
+          </Field>
+          <div>
+            <Toggle checked={f.slot_min_interest != null} onChange={(v) => set("slot_min_interest", v ? 6 : null)} label="Не заполнять слот слабым сюжетом" />
+            <p className="hint mt-1.5 max-w-[70ch]">Слот расписания берёт сюжет, только если языковая модель оценила его не ниже порога. Если подходящих нет, слот остаётся пустым: пустой слот лучше слабого поста. Сюжеты без оценки (модель недоступна) тоже пропускаются. Выключено — слот берёт лучший из имеющихся. Нужна чат-модель.</p>
+            {f.slot_min_interest != null && (
+              <div className="mt-4">
+                <Field label="Минимальная интересность для слота, из 10">
+                  <NumberInput className="max-w-[160px]" min={0} max={10} step={0.5} fallback={6} value={f.slot_min_interest} onChange={(v) => set("slot_min_interest", v)} disabled={ro} />
+                </Field>
+              </div>
+            )}
+          </div>
+          <div>
+            <Toggle checked={f.instant_interest != null} onChange={(v) => set("instant_interest", v ? 8 : null)} label="Публиковать самые интересные сюжеты сразу" />
+            <p className="hint mt-1.5 max-w-[70ch]">Сюжет, который языковая модель оценила не ниже порога, публикуется сразу после оценки, не дожидаясь слота расписания. Действует и при ручном утверждении: пост без замечаний автопроверок уходит сам, сомнительный остаётся редактору. Нужна чат-модель.</p>
+            {f.instant_interest != null && (
+              <div className="grid sm:grid-cols-2 gap-5 mt-4">
+                <Field label="Порог интересности, из 10">
+                  <NumberInput min={0} max={10} step={0.5} fallback={8} value={f.instant_interest} onChange={(v) => set("instant_interest", v)} disabled={ro} />
+                </Field>
+                <Field label="Не больше постов за 24 часа" hint="Посты по слотам расписания в лимит не входят.">
+                  <NumberInput min={1} max={50} fallback={3} value={f.instant_daily_limit} onChange={(v) => set("instant_daily_limit", v)} disabled={ro} />
+                </Field>
+              </div>
+            )}
+          </div>
           <div>
             <Toggle checked={f.auto_retry_unknown} onChange={(v) => set("auto_retry_unknown", v)} label="Повторять отправку при неизвестном исходе" />
             <p className="hint mt-1.5 max-w-[70ch]">Выключено по умолчанию: если Telegram не ответил, пост мог дойти, и повтор создаст дубль. Включайте для каналов, где дубль не страшен.</p>

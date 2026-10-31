@@ -79,6 +79,31 @@ def truncate(text: str, limit: int) -> str:
     return (cut[: m + 1] if m > limit * 0.5 else cut.rstrip() + "…")
 
 
+# «14 лучших скиллов», «Топ-10 сервисов», «7 Best Tools»: заголовок обещает список из N пунктов.
+# Слова-оценки («лучших», «главных») и «способов/причин» выдают подборку в любом месте заголовка, а просто существительное —
+# только в начале: «7 инструментов для…» — подборка, «Вышли 3 игры Valve» — новость.
+_LISTICLE = re.compile(
+    r"(?:\b(?:топ|top)[-\s]?(\d{1,2})\b)|"
+    r"(?:\b(\d{1,2})\s+(?:сам\w+\s+)?(?:лучш|главн|полезн|важн|интересн|бесплатн|способ|причин|совет|best|ways|tips|reasons|things|must))|"
+    r"(?:^\W*(\d{1,2})\s+(?:\w+\s+)?(?:инструмент|сервис|скилл|навык|плагин|расширени|приложени|игр|фильм|книг|модел|репозитори|"
+    r"tools|skills|plugins|apps|games|repos|models))",
+    re.I,
+)
+_LIST_ITEM = re.compile(r"(?m)^[ \t]*(?:[•\-–—*▪]|\d{1,2}[.)])[ \t]+\S")
+
+
+def promised_count(title: str) -> int | None:
+    """Сколько пунктов обещает заголовок-подборка; None — заголовок не про список (или пунктов меньше трёх)."""
+    m = _LISTICLE.search(title or "")
+    n = int(next(g for g in m.groups() if g)) if m else 0
+    return n if n >= 3 else None
+
+
+def list_items(text: str) -> int:
+    """Число пунктов списка в тексте: строки с «•», «-» или «1.»."""
+    return len(_LIST_ITEM.findall(text or ""))
+
+
 _MARK = re.compile(r"([ \t]*)\[(\d+)\]")
 
 

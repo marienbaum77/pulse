@@ -1,0 +1,16 @@
+# Отдельный бот: пересланные ему посты Telegram-каналов → вертикальные ролики во «Входящие» TikTok. Не зависит от стека Pulse.
+# Запуск:  docker compose -f docker-compose.tiktok.yml up -d --build      (настройка — tiktok-bot/README.md)
+name: pulse-tiktok-bot
+
+services:
+  tiktok-bot:
+    build: { context: ., dockerfile: tiktok-bot/Dockerfile }
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      TIKTOK_BOT_DATA_DIR: /data
+    volumes:
+      - tiktok-bot-data:/data
+
+volumes:
+  tiktok-bot-data:

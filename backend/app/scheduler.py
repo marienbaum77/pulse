@@ -11,7 +11,7 @@ from psycopg.types.json import Jsonb
 
 from . import db, images, jobs, publisher
 from .config import get_settings
-from .pipeline import generate
+from .pipeline import generate, stats
 from .textutil import utcnow
 
 log = logging.getLogger("pulse.scheduler")
@@ -94,6 +94,8 @@ async def maintenance() -> None:
     # пересчёт свежести и закрытие устаревших сюжетов, даже если новых материалов нет
     for p in await db.fetchall("SELECT id FROM projects WHERE active"):
         await jobs.enqueue("process_project", {"project_id": p["id"]}, dedupe_key=f"process:{p['id']}")
+    # просмотры и реакции своих постов — раз в stats.COLLECT_EVERY на канал
+    await stats.schedule_due()
 
 
 async def tick() -> None:

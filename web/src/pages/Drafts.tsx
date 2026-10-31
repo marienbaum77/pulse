@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, Check, ChevronLeft, ChevronRight, ExternalLink, ImageOff, Info, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ChevronLeft, ChevronRight, CornerDownRight, ExternalLink, ImageOff, Info, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuth, useProject, useToast } from "../lib/context";
 import { ago, stripCitations } from "../lib/format";
 import { CHANNEL_TYPES, DRAFT_STATUS, PUB_STATUS } from "../lib/labels";
-import type { Channel, Draft, DraftChecks, DraftListItem, GenerationJob, Project } from "../lib/types";
+import type { Channel, Cluster, Draft, DraftChecks, DraftListItem, GenerationJob, Project } from "../lib/types";
 import { NoProject } from "../components/NoProject";
 import { Thumb } from "../components/Thumb";
 import { Badge, Empty, ErrorNote, PageHeader, Spinner, Tabs } from "../components/ui";
@@ -37,6 +37,21 @@ export default function Drafts() {
     queryFn: () => api<GenerationJob[]>("/generation-queue", { params: { project_id: project!.id } }),
     enabled: !!project,
     refetchInterval: 5000,
+  });
+  const clustersQ = useQuery({
+    queryKey: ["clusters", project?.id],
+    queryFn: () => api<Cluster[]>("/clusters", { params: { project_id: project!.id } }),
+    enabled: !!project,
+  });
+  const quickApprove = useMutation({
+    mutationFn: (draftId: number) => api(`/drafts/${draftId}/approve`, { method: "POST" }),
+    onSuccess: () => {
+      toast("Пост утверждён и отправлен в публикацию", "ok");
+      qc.invalidateQueries({ queryKey: ["drafts"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["publications"] });
+    },
+    onError: (e: Error) => toast(e.message, "bad"),
   });
   const clearAll = useMutation({
     mutationFn: () => api<{ deleted: number; cancelled_jobs?: number }>("/drafts", { method: "DELETE", params: { project_id: project!.id } }),
@@ -97,14 +112,25 @@ export default function Drafts() {
   }
 
   const def = TABS.find((t) => t.id === tab)!;
-  const rows = all.filter(def.match);
+  const clustersMap = new Map((clustersQ.data ?? []).map((c) => [c.id, c]));
+  const getDraftInterest = (d: DraftListItem) => {
+    if (!d.cluster_ids || d.cluster_ids.length === 0) return -1;
+    const scores = d.cluster_ids.map((cid) => clustersMap.get(cid)?.interest ?? -1);
+    return Math.max(...scores, -1);
+  };
+  const rows = [...all.filter(def.match)].sort((a, b) => {
+    const intA = getDraftInterest(a);
+    const intB = getDraftInterest(b);
+    if (intB !== intA) return intB - intA;
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
   const counts = Object.fromEntries(TABS.map((t) => [t.id, all.filter(t.match).length + (t.id === "generating" ? queued.length : 0)]));
 
   return (
     <div className="fadein">
       <PageHeader
         title="Посты"
-        sub="Здесь виден весь путь поста: очередь генерации, проверка, публикация и ошибки. В автоматическом режиме система публикует прошедшие проверки посты сама."
+        sub="Генерация, проверка и публикация постов. Сортируются по интересности сюжета."
         actions={clearable && <button className="btn btn-danger" disabled={clearAll.isPending} title="Утверждённые публикации и выполняющиеся генерации сохранятся" onClick={() => window.confirm("Удалить все черновики на проверке, отклонённые и сбои? Утверждённая история и выполняющиеся генерации останутся.") && clearAll.mutate()}><Trash2 size={15} />{clearAll.isPending ? "Очищаем…" : "Очистить все"}</button>}
       />
       <div className="max-w-[860px]">
@@ -113,7 +139,7 @@ export default function Drafts() {
         {list.error && <ErrorNote error={list.error} />}
         {tab === "generating" && generationQueue.error && <ErrorNote error={generationQueue.error} />}
         {list.data && rows.length === 0 && (tab !== "generating" || queued.length === 0) && (
-          <Empty title={tab === "pending_review" ? "Постов на проверке нет" : tab === "generating" ? "Очередь пуста" : "Здесь пусто"} text={tab === "pending_review" ? "Новые посты появятся после генерации. В автоматическом режиме прошедшие проверки посты публикуются без ожидания редактора." : tab === "generating" ? "Посты появятся здесь сразу после постановки в очередь или старта генерации. Черновики, уже ожидающие решения редактора, находятся во вкладке «На проверке»." : undefined} />
+          <Empty title={tab === "pending_review" ? "Постов на проверке нет" : tab === "generating" ? "Очередь пуста" : "Здесь пусто"} text={tab === "pending_review" ? "Новые посты появятся после генерации. В автоматическом режиме прошедшие проверки посты публикуются без ожидания редактора." : tab === "generating" ? "Посты появятся здесь сразу после постановки в очередь или старта генерации." : undefined} />
         )}
         <ul>
           {tab === "generating" && queued.map((job) => (
@@ -122,15 +148,12 @@ export default function Drafts() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="inline-block w-2 h-2 rounded-full bg-accent animate-pulse shrink-0" />
-                    <span className="font-serif text-[17px] font-medium leading-snug break-words">{job.title}</span>
+                    <span className="font-sans text-[17.5px] font-medium leading-snug break-words">{job.title}</span>
                   </div>
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] text-muted mt-1">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13.5px] text-muted mt-1">
                     <span>{job.kind === "digest" ? "Дайджест" : "Пост"}</span>
                     <span>{ago(job.created_at)}</span>
                     <Badge tone="info">Идёт обработка</Badge>
-                    <span className="text-muted/80 text-[12px] hidden sm:inline">
-                      Подбираем лучший сюжет из собранных новостей и пишем текст
-                    </span>
                   </div>
                 </div>
                 {can("editor") && (
@@ -152,21 +175,41 @@ export default function Drafts() {
           ))}
           {rows.map((d) => {
             const warn = (d.checks.invalid_citations?.length ?? 0) > 0;
+            const interest = getDraftInterest(d);
             return (
               <li key={d.id} className="rule-b">
-                <Link to={`/drafts/${d.id}`} className="flex items-start gap-3.5 py-3.5 hover:bg-sunken/60 -mx-2 px-2" style={{ borderRadius: 3 }}>
-                  {d.has_image && <Thumb src={`/drafts/${d.id}/image?v=${encodeURIComponent(d.updated_at)}`} className="w-[88px] h-[58px] shrink-0 hidden sm:block" />}
-                  <span className="min-w-0 flex-1">
-                  <span className="block break-words font-serif text-[17px] font-medium leading-snug">{d.title || (d.status === "failed" ? "Не удалось написать" : "Подготовка поста")}</span>
-                  <span className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] text-muted mt-0.5">
-                    <span>{d.kind === "digest" ? "Дайджест" : "Пост"}</span>
-                    <span>{ago(d.created_at)}</span>
-                    <Badge tone={DRAFT_STATUS[d.status].tone}>{DRAFT_STATUS[d.status].label}</Badge>
-                    {warn && <span className="text-warn inline-flex items-center gap-1"><AlertTriangle size={12} />есть замечания</span>}
-                  </span>
-                  {d.status === "failed" && d.error && <span className="mt-1 block line-clamp-2 text-[12.5px] text-bad">{d.error}</span>}
-                  </span>
-                </Link>
+                <div className="flex items-center justify-between py-3.5 hover:bg-sunken/60 -mx-2 px-2 rounded gap-4">
+                  <Link to={`/drafts/${d.id}`} className="flex items-start gap-3.5 flex-1 min-w-0">
+                    {d.has_image && <Thumb src={`/drafts/${d.id}/image?v=${encodeURIComponent(d.updated_at)}`} className="w-[88px] h-[58px] shrink-0 hidden sm:block" />}
+                    <span className="min-w-0 flex-1">
+                      <span className="block break-words font-sans text-[17.5px] font-medium leading-snug">{d.title || (d.status === "failed" ? "Не удалось написать" : "Подготовка поста")}</span>
+                      <span className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13.5px] text-muted mt-1">
+                        <span>{d.kind === "digest" ? "Дайджест" : "Пост"}</span>
+                        <span>{ago(d.created_at)}</span>
+                        {interest >= 0 && (
+                          <span className="font-mono text-[12.5px] font-semibold text-accent">★ {interest.toFixed(1)}</span>
+                        )}
+                        <Badge tone={DRAFT_STATUS[d.status].tone}>{DRAFT_STATUS[d.status].label}</Badge>
+                        {warn && <span className="text-warn inline-flex items-center gap-1"><AlertTriangle size={12} />есть замечания</span>}
+                      </span>
+                      {d.status === "failed" && d.error && <span className="mt-1 block line-clamp-2 text-[12.5px] text-bad">{d.error}</span>}
+                    </span>
+                  </Link>
+                  {can("editor") && d.status === "pending_review" && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary shrink-0 self-center"
+                      disabled={quickApprove.isPending}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        quickApprove.mutate(d.id);
+                      }}
+                      title="Быстро утвердить и отправить в канал"
+                    >
+                      ✓ Опубликовать
+                    </button>
+                  )}
+                </div>
               </li>
             );
           })}
@@ -236,8 +279,12 @@ function DraftEditor({ id, project, onDecided }: { id: number; project: Project;
     onError: fail,
   });
   const image = useMutation({
-    mutationFn: (patch: { remove_image?: boolean; image_item_id?: number }) => api(`/drafts/${id}`, { method: "PATCH", body: patch }),
-    onSuccess: () => { toast("Картинка обновлена"); refresh(); },
+    mutationFn: (patch: { remove_image?: boolean; remove_video?: boolean; remove_reply?: boolean; remove_extra_images?: boolean; image_item_id?: number }) =>
+      api(`/drafts/${id}`, { method: "PATCH", body: patch }),
+    onSuccess: (_r, patch) => {
+      toast(patch.remove_reply ? "Пост выйдет отдельным сообщением" : patch.remove_video ? "Ролик убран" : patch.remove_extra_images ? "Пост выйдет с одной картинкой" : "Картинка обновлена");
+      refresh();
+    },
     onError: fail,
   });
   const busy = image.isPending || save.isPending || approve.isPending || reject.isPending || regen.isPending;
@@ -258,6 +305,25 @@ function DraftEditor({ id, project, onDecided }: { id: number; project: Project;
       <div className="grid xl:grid-cols-[minmax(0,1fr)_320px] gap-x-12 gap-y-10">
         <div className="min-w-0">
           <TitleField value={title} onChange={setTitle} readOnly={!editable} />
+          {d.reply_to_draft_id && d.checks.related && (
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-3 text-[13.5px]">
+              <CornerDownRight size={15} className="text-muted" aria-hidden />
+              <span>Ответ на пост <Link to={`/drafts/${d.reply_to_draft_id}`} className="underline underline-offset-4">«{d.checks.related.title}»</Link> — {RELATED_REASONS[d.checks.related.reason]}</span>
+              {editable && <button className="btn btn-sm" onClick={() => image.mutate({ remove_reply: true })} disabled={busy}>Не отвечать</button>}
+            </p>
+          )}
+          {d.video_url && (
+            <figure className="mb-3">
+              {d.video_kind === "animation"
+                ? <img key={`a-${d.id}-${d.updated_at}`} src={`/api/drafts/${d.id}/video`} alt="" loading="lazy" className="w-full max-h-80 object-contain bg-sunken" style={{ borderRadius: 3 }} />
+                : <video key={`v-${d.id}-${d.updated_at}`} src={`/api/drafts/${d.id}/video`} controls muted preload="none" className="w-full max-h-80 bg-sunken" style={{ borderRadius: 3 }}
+                    poster={d.image_url ? `/api/drafts/${d.id}/image?v=${encodeURIComponent(d.updated_at)}` : undefined} />}
+              <figcaption className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
+                {editable && <button className="btn btn-sm" onClick={() => image.mutate({ remove_video: true })} disabled={busy}><ImageOff size={14} />{d.video_kind === "animation" ? "Убрать GIF" : "Убрать видео"}</button>}
+                <span className="hint">{d.video_kind === "animation" ? "GIF" : "Видео"} из первоисточника, README или статьи, как есть (до 50 МБ). Telegram получит его вместо картинки; ВКонтакте и Discord — картинку ниже.</span>
+              </figcaption>
+            </figure>
+          )}
           {d.image_url && (
             <figure className="mb-3">
               <Thumb key={`${d.id}-${d.updated_at}`} src={`/drafts/${d.id}/image?v=${encodeURIComponent(d.updated_at)}`} className="w-full max-h-80" />
@@ -269,17 +335,28 @@ function DraftEditor({ id, project, onDecided }: { id: number; project: Project;
               )}
             </figure>
           )}
+          {d.image_url && d.extra_images.length > 0 && (
+            <figure className="mb-3">
+              <div className="grid grid-cols-3 gap-2">
+                {d.extra_images.map((_, n) => <Thumb key={`x-${d.id}-${n}-${d.updated_at}`} src={`/drafts/${d.id}/extra/${n}?v=${encodeURIComponent(d.updated_at)}`} className="w-full h-28" />)}
+              </div>
+              <figcaption className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
+                {editable && <button className="btn btn-sm" onClick={() => image.mutate({ remove_extra_images: true })} disabled={busy}><ImageOff size={14} />Только обложка</button>}
+                <span className="hint">Ещё иллюстрации из первоисточника, README или статьи: в Telegram пост уйдёт альбомом{d.video_url && d.video_kind !== "animation" ? " вместе с видео" : ""}, во ВКонтакте — несколькими фото.</span>
+              </figcaption>
+            </figure>
+          )}
           <AutoTextarea value={body} onChange={setBody} readOnly={!editable} />
           <div className="flex flex-wrap items-center justify-between gap-x-4 mt-1.5 text-[12.5px] text-muted">
             <span className="num">{body.length} симв.{body.length > 3800 && <span className="text-warn ml-2">Telegram принимает до 4096 символов</span>}</span>
-            <span>Номера [1] — только для сверки с источниками справа; при публикации они убираются</span>
+            <span>Номера [1] — только для сверки с источниками справа; при публикации они убираются. **Жирный** и [текст](https://…) становятся форматированием</span>
           </div>
           <details className="mt-4">
             <summary className="cursor-pointer text-sm font-medium">Как увидят подписчики</summary>
             <div className="mt-2 px-4 py-3.5 prose-draft whitespace-pre-wrap break-words" style={{ background: "var(--sunken)", borderRadius: 3, fontSize: 16 }}>
               {d.image_url && <Thumb key={`pv-${d.id}-${d.updated_at}`} src={`/drafts/${d.id}/image?v=${encodeURIComponent(d.updated_at)}`} className="w-full max-h-72 mb-3" />}
               {title && <p className="font-semibold mb-3">{title}</p>}
-              {stripCitations(body, new Set(d.citations.map((c) => c.n)))}
+              {renderMarkup(stripCitations(body, new Set(d.citations.map((c) => c.n))))}
             </div>
           </details>
 
@@ -397,10 +474,36 @@ function DraftEditor({ id, project, onDecided }: { id: number; project: Project;
   );
 }
 
+const RELATED_REASONS: Record<NonNullable<DraftChecks["related"]>["reason"], string> = {
+  update: "обновление того же сюжета",
+  link: "тот же репозиторий или страница",
+  origin: "тот же первоисточник",
+  similar: "близкая тема и общее имя в заголовке",
+};
+
+// Та же разметка, что понимает публикатор (backend/app/markup.py): [текст](https://адрес) и **жирный**.
+const MARKUP = /\[([^[\]\n]{1,200})\]\((https?:\/\/[^\s()<>]+)\)|\*\*(?=\S)([^*\n]{1,300}?)(?<=\S)\*\*/g;
+
+function renderMarkup(text: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(MARKUP)) {
+    const at = m.index ?? 0;
+    if (at > last) out.push(text.slice(last, at));
+    out.push(m[2]
+      ? <a key={at} href={m[2]} target="_blank" rel="noreferrer" className="underline underline-offset-4">{m[1]}</a>
+      : <b key={at}>{m[3]}</b>);
+    last = at + m[0].length;
+  }
+  out.push(text.slice(last));
+  return out;
+}
+
 function Checks({ checks, maxLength, kind }: { checks: DraftChecks; maxLength: number; kind: string }) {
   const lines: { tone: "ok" | "warn" | "bad" | "info"; text: string }[] = [];
   if (checks.automatic_review) {
     const r = checks.automatic_review;
+    if (r.instant) lines.push({ tone: "info", text: "Пост создан сразу после оценки: интересность сюжета выше порога проекта." });
     if (r.overridden) {
       lines.push({ tone: "warn", text: `Опубликовано в режиме автопубликации, несмотря на замечания: ${r.reasons.join("; ")}.` });
     } else {
@@ -442,7 +545,7 @@ function TitleField({ value, onChange, readOnly }: { value: string; onChange: (v
   return (
     <textarea
       ref={ref} rows={1}
-      className="block w-full resize-none overflow-hidden break-words bg-transparent font-serif text-[26px] font-semibold leading-tight py-1 -mx-1 px-1 mb-3"
+      className="block w-full resize-none overflow-hidden break-words bg-transparent font-sans text-[24px] font-semibold leading-tight py-1 -mx-1 px-1 mb-3"
       style={{ border: "1px solid transparent", borderRadius: 3, overflowWrap: "anywhere" }}
       value={value} onChange={(e) => onChange(e.target.value.replace(/\s*\n\s*/g, " "))} onKeyDown={(e) => e.key === "Enter" && e.preventDefault()}
       readOnly={readOnly} placeholder="Заголовок" aria-label="Заголовок"

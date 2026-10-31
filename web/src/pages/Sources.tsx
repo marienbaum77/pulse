@@ -171,7 +171,7 @@ export default function Sources() {
     <div className="fadein">
       <PageHeader
         title="Источники"
-        sub="Откуда Pulse берёт материалы: RSS-ленты, YouTube, веб-поиск, сайты без RSS, Reddit и Telegram. Авторитетность влияет на вес: чем она выше, тем сильнее вклад источника."
+        sub="Откуда Pulse берёт материалы: RSS-ленты, YouTube, веб-поиск, сайты без RSS, Reddit и Telegram."
         actions={can("editor") && (
           <div className="flex flex-wrap gap-2">
             <input ref={opmlRef} type="file" accept=".opml,.xml,application/xml,text/xml" hidden onChange={(e) => e.target.files?.[0] && onOpml(e.target.files[0])} />
@@ -194,18 +194,17 @@ export default function Sources() {
             <li key={s.id} className="rule-b py-3.5 grid md:grid-cols-[minmax(0,1fr)_auto] gap-x-6 gap-y-2 items-center">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-baseline gap-x-3">
-                  <span className="font-serif text-[17px] font-medium">{s.name}</span>
+                  <span className="font-sans text-[16px] font-medium">{s.name}</span>
                   {s.type === "manual" ? <span className="eyebrow">импорт</span> : <span className="eyebrow">{KINDS[kind].label}</span>}
                   {s.config?.mode && <span className="eyebrow">{s.config.mode === "curated" ? "подборка" : "новости"}</span>}
                   {!s.enabled && polled && <span className="eyebrow">отключён</span>}
                 </div>
                 {detail && <p className="text-[13px] text-muted truncate">{detail}</p>}
                 {s.url && !detail.startsWith("Найдена") && <p className="text-[13px] text-muted truncate">{s.url}</p>}
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] mt-1">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13.5px] mt-1">
                   {polled && <Badge tone={tone}>{s.last_error ? "Ошибка" : s.last_ok_at ? `Обновлён ${ago(s.last_ok_at)}` : "Ещё не опрашивался"}</Badge>}
                   <span className="text-muted num">{fmtNum(s.item_count)} материалов</span>
                   {polled && s.last_ok_at && <span className="text-muted num">последняя выдача: {s.last_entry_count}, новых: {s.last_new_count}</span>}
-                  <span className="text-muted num">авторитетность {s.authority.toFixed(2)}</span>
                   {polled && <span className="text-muted">{POLL.find((p) => p[0] === s.poll_minutes)?.[1] ?? `каждые ${s.poll_minutes} мин`}</span>}
                 </div>
                 {s.last_error && <p className="text-[13px] text-bad mt-1 break-words">{s.last_error}</p>}
@@ -305,14 +304,9 @@ export default function Sources() {
               </>
             )}
 
-            <div className="grid sm:grid-cols-2 gap-4">
-              <Field label={`Авторитетность: ${form.authority.toFixed(2)}`} hint="0 — сомнительный, 1 — первоисточник">
-                <input type="range" min={0} max={1} step={0.05} className="w-full accent-[var(--brand)]" value={form.authority} onChange={(e) => patch({ authority: Number(e.target.value) })} />
-              </Field>
-              <Field label="Как часто опрашивать">
-                <select className="field" value={form.poll_minutes} onChange={(e) => patch({ poll_minutes: Number(e.target.value) })}>{POLL.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
-              </Field>
-            </div>
+            <Field label="Как часто опрашивать">
+              <select className="field" value={form.poll_minutes} onChange={(e) => patch({ poll_minutes: Number(e.target.value) })}>{POLL.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+            </Field>
             <Toggle checked={form.enabled} onChange={(v) => patch({ enabled: v })} label="Источник включён" />
           </>
         )}

@@ -5,7 +5,7 @@ import signal
 
 from . import db, jobs, publisher, scheduler
 from .config import get_settings
-from .pipeline import discovery, generate, ingest, process  # noqa: F401  (регистрируют обработчики задач)
+from .pipeline import aspects, discovery, generate, ingest, process, stats  # noqa: F401  (регистрируют обработчики задач)
 
 log = logging.getLogger("pulse.worker")
 

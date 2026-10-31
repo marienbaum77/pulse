@@ -1,5 +1,4 @@
 import "@fontsource-variable/golos-text";
-import "@fontsource-variable/literata";
 import "./index.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

@@ -107,7 +107,7 @@ pulse/
 ├── deploy/           # Caddyfile, nginx.conf, скрипт бэкапа
 ├── docs/             # установка, конфигурация, VPS, бэкапы, безопасность
 ├── sample_data/      # демо-новости для оценки кластеризации
-├── docker-compose*.yml   # base + dev / prod / test overlays
+├── docker-compose*.yml   # base + dev / prod / test / doh (DNS-over-HTTPS) overlays
 └── .github/          # CI, релизный workflow, шаблоны issue и PR
 ```
 

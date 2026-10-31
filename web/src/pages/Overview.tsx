@@ -7,7 +7,7 @@ import { useAuth, useProject, useToast } from "../lib/context";
 import { ago, dateTime, fmtNum, plural } from "../lib/format";
 import { PUB_STATUS } from "../lib/labels";
 import type { Dashboard } from "../lib/types";
-import { DailyBars, Score } from "../components/charts";
+import { DailyBars } from "../components/charts";
 import { NoProject } from "../components/NoProject";
 import { Badge, ErrorNote, PageHeader, Spinner } from "../components/ui";
 
@@ -63,14 +63,14 @@ export default function Overview() {
       {d && (
         <>
           <section className="flex flex-wrap items-start justify-between gap-4 mb-9">
-            <p className="font-serif text-[21px] leading-[1.45] max-w-[62ch]">
+            <p className="font-sans text-[18px] leading-[1.5] max-w-[62ch]">
               За {days} {plural(days, "день", "дня", "дней")} вышло <N>{fmtNum(d.metrics.items)}</N> {plural(d.metrics.items, "материал", "материала", "материалов")}
               {d.metrics.items_prev > 0 && (() => {
                 const diff = Math.round(((d.metrics.items - d.metrics.items_prev) / d.metrics.items_prev) * 100);
                 return diff === 0 ? ", столько же, сколько в прошлый период" : <>, {Math.abs(diff)}% {diff > 0 ? "больше" : "меньше"}, чем в прошлый период</>;
               })()}
               . Сейчас в работе <N>{d.metrics.open_clusters}</N> {plural(d.metrics.open_clusters, "сюжет", "сюжета", "сюжетов")}
-              {d.metrics.pending_drafts > 0 && <>, на проверке <Link to="/drafts" className="underline underline-offset-4 decoration-mark decoration-2"><N>{d.metrics.pending_drafts}</N> {plural(d.metrics.pending_drafts, "черновик", "черновика", "черновиков")}</Link></>}
+              {d.metrics.pending_drafts > 0 && <>, на проверке <Link to="/drafts" className="underline underline-offset-4 decoration-accent decoration-2"><N>{d.metrics.pending_drafts}</N> {plural(d.metrics.pending_drafts, "черновик", "черновика", "черновиков")}</Link></>}
               . Отправлено <N>{d.metrics.published}</N> {plural(d.metrics.published, "пост", "поста", "постов")}.
             </p>
             <div className="inline-flex" role="group" aria-label="Период" style={{ border: "1px solid var(--rule)", borderRadius: 3 }}>
@@ -97,11 +97,13 @@ export default function Overview() {
                   <ul>
                     {d.top_clusters.map((c) => (
                       <li key={c.id} className="rule-b">
-                        <Link to={`/trends?open=${c.id}`} className="grid grid-cols-1 sm:grid-cols-[112px_1fr] gap-x-4 gap-y-2 items-center py-3 hover:bg-sunken/60 -mx-2 px-2" style={{ borderRadius: 3 }}>
-                          <Score value={c.score} />
+                        <Link to={`/trends?open=${c.id}`} className="grid grid-cols-1 sm:grid-cols-[70px_1fr] gap-x-4 gap-y-2 items-center py-3 hover:bg-sunken/60 -mx-2 px-2 rounded">
+                          <span className="font-mono text-[13px] font-semibold px-2 py-0.5 rounded-full border border-rule bg-sunken text-ink text-center">
+                            ★ {c.score != null ? (c.score * 10).toFixed(1) : "—"}
+                          </span>
                           <span className="min-w-0">
-                            <span className="block font-serif text-[16.5px] font-medium leading-snug truncate">{c.title}</span>
-                            <span className="block text-[13px] text-muted">{c.item_count} {plural(c.item_count, "материал", "материала", "материалов")} из {c.source_count} {plural(c.source_count, "источника", "источников", "источников")}, {ago(c.last_seen)}</span>
+                            <span className="block font-sans text-[17px] font-medium leading-snug truncate">{c.title}</span>
+                            <span className="block text-[13.5px] text-muted mt-0.5">{c.item_count} {plural(c.item_count, "материал", "материала", "материалов")} из {c.source_count} {plural(c.source_count, "источника", "источников", "источников")}, {ago(c.last_seen)}</span>
                           </span>
                         </Link>
                       </li>
@@ -118,32 +120,32 @@ export default function Overview() {
                 <ul>
                   {d.generation_queue.map((j) => (
                     <li key={`j${j.id}`} className="rule-b">
-                      <Link to="/drafts" className="block py-2.5 hover:bg-sunken/60 -mx-2 px-2" style={{ borderRadius: 3 }}>
-                        <span className="block font-serif font-medium leading-snug">{j.title}</span>
-                        <span className="text-[13px] text-muted">{j.kind === "digest" ? "дайджест" : "пост"} · ожидает генерации · {ago(j.created_at)}</span>
+                      <Link to="/drafts" className="block py-2.5 hover:bg-sunken/60 -mx-2 px-2 rounded">
+                        <span className="block font-sans text-[16px] font-medium leading-snug">{j.title}</span>
+                        <span className="text-[13.5px] text-muted">{j.kind === "digest" ? "дайджест" : "пост"} · ожидает генерации · {ago(j.created_at)}</span>
                       </Link>
                     </li>
                   ))}
                   {d.generating.map((r) => (
                     <li key={`g${r.id}`} className="rule-b">
-                      <Link to={`/drafts/${r.id}`} className="block py-2.5 hover:bg-sunken/60 -mx-2 px-2" style={{ borderRadius: 3 }}>
-                        <span className="block font-serif font-medium leading-snug">{r.title}</span>
-                        <span className="text-[13px] text-muted">{r.kind === "digest" ? "дайджест" : "пост"} · формируется · {ago(r.created_at)}</span>
+                      <Link to={`/drafts/${r.id}`} className="block py-2.5 hover:bg-sunken/60 -mx-2 px-2 rounded">
+                        <span className="block font-sans text-[16px] font-medium leading-snug">{r.title}</span>
+                        <span className="text-[13.5px] text-muted">{r.kind === "digest" ? "дайджест" : "пост"} · формируется · {ago(r.created_at)}</span>
                       </Link>
                     </li>
                   ))}
                   {d.review.map((r) => (
                     <li key={`d${r.id}`} className="rule-b">
-                      <Link to={`/drafts/${r.id}`} className="block py-2.5 hover:bg-sunken/60 -mx-2 px-2" style={{ borderRadius: 3 }}>
-                        <span className="block font-serif font-medium leading-snug">{r.title || "Без заголовка"}</span>
-                        <span className="text-[13px] text-muted">на проверке, {ago(r.created_at)}</span>
+                      <Link to={`/drafts/${r.id}`} className="block py-2.5 hover:bg-sunken/60 -mx-2 px-2 rounded">
+                        <span className="block font-sans text-[16px] font-medium leading-snug">{r.title || "Без заголовка"}</span>
+                        <span className="text-[13.5px] text-muted">на проверке, {ago(r.created_at)}</span>
                       </Link>
                     </li>
                   ))}
                   {d.queue.map((p) => (
                     <li key={`p${p.id}`} className="rule-b">
-                      <Link to="/publications" className="block py-2.5 hover:bg-sunken/60 -mx-2 px-2" style={{ borderRadius: 3 }}>
-                        <span className="block font-serif font-medium leading-snug">{p.title || "Без заголовка"}</span>
+                      <Link to="/publications" className="block py-2.5 hover:bg-sunken/60 -mx-2 px-2 rounded">
+                        <span className="block font-sans text-[16px] font-medium leading-snug">{p.title || "Без заголовка"}</span>
                         <Badge tone={PUB_STATUS[p.status].tone}>{PUB_STATUS[p.status].label}</Badge>
                       </Link>
                     </li>

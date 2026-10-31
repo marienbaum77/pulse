@@ -8,7 +8,7 @@ import { dateTime } from "../lib/format";
 import { CHANNEL_TYPES, LEAD_OPTIONS, SLOT_KINDS } from "../lib/labels";
 import type { Channel, Schedule, SlotKind } from "../lib/types";
 import { NoProject } from "../components/NoProject";
-import { Badge, Dialog, ErrorNote, Field, PageHeader, Spinner, Toggle } from "../components/ui";
+import { Badge, Dialog, ErrorNote, Field, NumberInput, PageHeader, Spinner, Toggle } from "../components/ui";
 
 type ChType = Channel["type"];
 interface ChForm {
@@ -22,6 +22,7 @@ interface ChForm {
   owner_id: string;
   access_token: string;
   webhook_url: string;
+  signature: string;
   enabled: boolean;
   hasSecret?: boolean;
 }
@@ -35,6 +36,7 @@ const BLANK_CH: ChForm = {
   owner_id: "",
   access_token: "",
   webhook_url: "",
+  signature: "",
   enabled: true,
 };
 
@@ -72,6 +74,7 @@ export default function Channels() {
       } else if (f.type === "discord") {
         config = { ...(f.webhook_url ? { webhook_url: f.webhook_url } : {}) };
       }
+      if (f.signature.trim()) config.signature = f.signature.trim();
       const body = { project_id: pid, type: f.type, name: f.name, config, enabled: f.enabled };
       return f.id ? api(`/channels/${f.id}`, { method: "PUT", body }) : api("/channels", { method: "POST", body });
     },
@@ -168,6 +171,7 @@ export default function Channels() {
                         owner_id: c.config.owner_id ?? "",
                         access_token: "",
                         webhook_url: "",
+                        signature: c.config.signature ?? "",
                         enabled: c.enabled,
                         hasSecret: c.has_secret,
                       })
@@ -274,6 +278,11 @@ export default function Channels() {
               </Field>
             )}
             {ch.type === "console" && <p className="hint">Пост будет записан в журнал воркера. Удобно, чтобы проверить весь путь до настройки Telegram.</p>}
+            {ch.type !== "console" && (
+              <Field label="Подпись в конце поста" hint="Необязательно. Например, @my_channel или [Мой канал](https://t.me/my_channel). Понимает **жирный**; ВКонтакте покажет её простым текстом.">
+                <input className="field" maxLength={300} value={ch.signature} onChange={(e) => patchCh({ signature: e.target.value })} placeholder="@my_channel" />
+              </Field>
+            )}
             <Toggle checked={ch.enabled} onChange={(v) => patchCh({ enabled: v })} label="Канал включён" />
           </>
         )}
@@ -299,7 +308,7 @@ export default function Channels() {
               <Field label="Формат">
                 <select className="field" value={sc.kind} onChange={(e) => patchSc({ kind: e.target.value as ScForm["kind"] })}><option value="digest">Один дайджест</option><option value="post">Отдельные посты</option></select>
               </Field>
-              <Field label="Сколько сюжетов"><input className="field num" type="number" min={1} max={10} value={sc.top_n} onChange={(e) => patchSc({ top_n: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} /></Field>
+              <Field label="Сколько сюжетов"><NumberInput min={1} max={10} fallback={1} value={sc.top_n} onChange={(v) => patchSc({ top_n: v })} /></Field>
             </div>
             <Field label="Что публиковать" hint="Ничего не отмечено — любой материал. Отметьте, чтобы слот брал только нужный вид: так собирается план вроде «1 видео и 2 статьи в день».">
               <div className="flex flex-wrap gap-x-5 gap-y-2">

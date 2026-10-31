@@ -46,7 +46,15 @@ export default function Publications() {
 
   return (
     <div className="fadein">
-      <PageHeader title="Публикации" sub="Что и куда отправлено. Каждая пара «черновик — канал» отправляется ровно один раз." />
+      <PageHeader
+        title="Публикации"
+        sub="Что и куда отправлено. Каждая пара «черновик — канал» отправляется ровно один раз."
+        actions={
+          <button className="btn btn-sm" onClick={() => qc.invalidateQueries({ queryKey: ["publications"] })}>
+            Обновить
+          </button>
+        }
+      />
       {hasUnknown && (
         <div className="mb-6 px-4 py-3.5 text-[14px] leading-relaxed max-w-[76ch]" style={{ border: "1px solid var(--warn)", borderRadius: 3 }}>
           <b>Исход неизвестен.</b> Запрос ушёл, но ответа мы не получили (таймаут или сбой сервера) — пост мог дойти до канала. Автоматический повтор мог бы создать дубль, поэтому решение за вами:
@@ -61,7 +69,7 @@ export default function Publications() {
         {rows.map((p) => (
           <li key={p.id} className="rule-b py-3.5 grid md:grid-cols-[minmax(0,1fr)_auto] gap-x-6 gap-y-2 items-center">
             <div className="min-w-0">
-              <Link to={`/drafts/${p.draft_id}`} className="block font-serif text-[16.5px] font-medium leading-snug hover:underline truncate">{p.draft_title || "Без заголовка"}</Link>
+              <Link to={`/drafts/${p.draft_id}`} className="block font-sans text-[16px] font-medium leading-snug hover:underline truncate">{p.draft_title || "Без заголовка"}</Link>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] text-muted mt-0.5">
                 <span>{p.channel_name}</span>
                 <Badge tone={PUB_STATUS[p.status].tone}>{PUB_STATUS[p.status].label}</Badge>

@@ -10,3 +10,6 @@ backups/
 *.tsbuildinfo
 *.pdf
 render_resume*.py
+
+# пробные ролики бота TikTok
+tiktok-bot/preview/

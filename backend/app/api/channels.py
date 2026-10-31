@@ -24,6 +24,12 @@ class ChannelBody(BaseModel):
 def _validate_channel(body: ChannelBody, *, existing: dict | None = None) -> dict:
     c = dict(body.config)
     existing = existing or {}
+    # Подпись в конце каждого поста (например, @my_channel); понимает **жирный** и [текст](https://…).
+    signature = str(c.pop("signature", "") or "").strip()
+    if len(signature) > 300:
+        raise HTTPException(422, "Подпись канала — не длиннее 300 символов")
+    if signature:
+        c["signature"] = signature
     if body.type == "telegram":
         if not str(c.get("chat_id", "")).strip():
             raise HTTPException(422, "Для Telegram укажите chat_id (например, @mychannel или -1001234567890)")

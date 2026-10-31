@@ -101,9 +101,10 @@ const EVENT_KEYS: Record<string, string[]> = {
   generation: ["generation-queue", "dashboard", "drafts", "content-plan"],
   pipeline: ["dashboard", "clusters", "cluster", "sources", "content-plan"],
   draft: ["drafts", "draft", "dashboard", "clusters", "content-plan"],
-  publication: ["publications", "dashboard", "drafts", "draft", "content-plan"],
+  publication: ["publications", "dashboard", "drafts", "draft", "content-plan", "stats"],
   source: ["sources", "dashboard"],
   discovery: ["discovery"],
+  project: ["projects"],
 };
 
 export function useLiveEvents(enabled: boolean): boolean {

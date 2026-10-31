@@ -186,7 +186,8 @@ function ModelPicker({
 }) {
   const chatIds = models.filter((m) => m.kind === "chat").map((m) => m.id);
   const embedIds = models.filter((m) => m.kind === "embed").map((m) => m.id);
-  const invalidSelection = models.length > 0 && (!chatIds.includes(chatModel) || !embedIds.includes(embedModel));
+  // Список одного вида может быть пуст (сервер не ответил) — тогда выбор этого вида не проверяем и не блокируем кнопку.
+  const invalidSelection = (chatIds.length > 0 && !chatIds.includes(chatModel)) || (embedIds.length > 0 && !embedIds.includes(embedModel));
   const MEMORY: Record<string, string> = {
     "bge-m3": "~1,2 ГБ",
     "qwen2.5:3b-instruct": "~2 ГБ",
@@ -200,7 +201,7 @@ function ModelPicker({
       <p className="hint mb-4">Выберите скачанную модель или укажите имя и нажмите «Скачать» (Ollama). Смена применяется сразу, без правки .env.</p>
       <div className="grid sm:grid-cols-2 gap-5 mb-4">
         <Field label="Модель генерации" hint={MEMORY[chatModel] ? `Ориентир по памяти: ${MEMORY[chatModel]}` : "Пишет текст постов; доступны только чат-модели"}>
-          {models.length > 0 ? (
+          {chatIds.length > 0 ? (
             <select className="field" value={chatModel} onChange={(e) => setChatModel(e.target.value)}>
               {!chatIds.includes(chatModel) && chatModel && <option value={chatModel} disabled>{chatModel} (не чат-модель)</option>}
               {chatIds.length === 0 && <option value="" disabled>Нет чат-моделей</option>}
@@ -211,7 +212,7 @@ function ModelPicker({
           )}
         </Field>
         <Field label="Модель эмбеддингов" hint={MEMORY[embedModel] ? `Ориентир по памяти: ${MEMORY[embedModel]}` : "Нужна для сюжетов; доступны только embedding-модели"}>
-          {models.length > 0 ? (
+          {embedIds.length > 0 ? (
             <select className="field" value={embedModel} onChange={(e) => setEmbedModel(e.target.value)}>
               {!embedIds.includes(embedModel) && embedModel && <option value={embedModel} disabled>{embedModel}</option>}
               {embedIds.length === 0 && <option value="" disabled>Нет embedding-моделей</option>}

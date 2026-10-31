@@ -3,6 +3,7 @@
 Telegram — загрузкой файла; повторные показы и публикация берут картинку из кеша, а не с чужого сайта."""
 import asyncio
 import hashlib
+import io
 import logging
 import os
 import re
@@ -108,6 +109,79 @@ def cover_quality(data: bytes) -> bool | None:
     return size[0] >= MIN_COVER_WIDTH and size[1] >= MIN_COVER_HEIGHT
 
 
+# Сравнение картинок по содержимому: уменьшенные копии в оттенках серого и нормированная корреляция (1 — совпадают).
+SAME_WIDTH = 128  # ширина, к которой приводится картинка при точном сравнении
+COARSE_WIDTH = 64  # и при грубом поиске кадрированной части
+SAME_MIN = 0.9  # корреляция, начиная с которой это одна картинка
+COARSE_MIN = 0.75  # грубый поиск нашёл кандидата — уточняем
+# Какую долю ширины большой картинки занимает кадрированная: 0,35–0,95. Пик корреляции узкий (у обложки Unity и её
+# кадра у Хабра — 0,92 на доле 0,66 и уже 0,80 на 0,70), поэтому шаг мелкий, а затем уточнение вокруг лучшей доли.
+CROP_SCALES = tuple(x / 100 for x in range(35, 96, 2))
+
+
+def _gray(data: bytes):
+    from PIL import Image
+
+    with Image.open(io.BytesIO(data)) as img:
+        img = img.convert("L")
+        img.thumbnail((4 * SAME_WIDTH, 16 * SAME_WIDTH), Image.BOX)  # один раз декодируем и уменьшаем, дальше — из этой копии
+        return img
+
+
+def _array(img, width: int):
+    import numpy as np
+    from PIL import Image
+
+    height = max(1, round(img.height * width / img.width))
+    return np.asarray(img.resize((max(1, width), height), Image.BOX), dtype=np.float32)
+
+
+def _best_match(big, small) -> float:
+    """Наибольшая корреляция small по всем положениям внутри big."""
+    import numpy as np
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    if small.shape[0] > big.shape[0] or small.shape[1] > big.shape[1]:
+        return 0.0
+    windows = sliding_window_view(big, small.shape)
+    s = small - small.mean()
+    w = windows - windows.mean(axis=(-1, -2), keepdims=True)
+    num = (w * s).sum(axis=(-1, -2))
+    den = np.sqrt((w * w).sum(axis=(-1, -2)) * (s * s).sum())
+    return float((num / np.maximum(den, 1e-6)).max())
+
+
+def _best_scale(big, other, width: int, scales) -> tuple[float, float]:
+    """(лучшая корреляция, доля ширины), с которой other лучше всего находится внутри big."""
+    best = (0.0, 0.0)
+    for scale in scales:
+        score = _best_match(big, _array(other, round(width * scale)))
+        if score > best[0]:
+            best = (score, scale)
+    return best
+
+
+def same_picture(a: bytes, b: bytes) -> bool:
+    """Одна и та же картинка: в другом размере или формате (у Хабра одна иллюстрация лежит под двумя именами) или
+    кадрированная — приближенная часть другой (Хабр обрезает обложку первоисточника). Нечитаемая картинка — не совпадает."""
+    try:
+        img_a, img_b = _gray(a), _gray(b)
+    except Exception:
+        return False
+    full_a, full_b = _array(img_a, SAME_WIDTH), _array(img_b, SAME_WIDTH)
+    if abs(full_a.shape[0] - full_b.shape[0]) <= 2:
+        rows = min(full_a.shape[0], full_b.shape[0])
+        if _best_match(full_a[:rows], full_b[:rows]) >= SAME_MIN:
+            return True
+    for big, other, full in ((img_a, img_b, full_a), (img_b, img_a, full_b)):
+        score, scale = _best_scale(_array(big, COARSE_WIDTH), other, COARSE_WIDTH, CROP_SCALES)
+        if score >= COARSE_MIN:
+            near = [scale + d / 100 for d in range(-3, 4) if 0 < scale + d / 100 < 1]
+            if _best_scale(full, other, SAME_WIDTH, near)[0] >= SAME_MIN:
+                return True
+    return False
+
+
 
 def _from_html(html: str, base: str) -> str | None:
     for tag in _IMG_TAG.findall(html or ""):
@@ -176,7 +250,7 @@ async def _download_image_once(url: str) -> tuple[bytes, str]:
                     continue
                 r.raise_for_status()
                 ctype = r.headers.get("content-type", "").split(";")[0].strip().lower()
-                if ctype not in IMAGE_TYPES:
+                if ctype.startswith(("text/", "application/json", "application/xml", "video/", "audio/")):
                     raise ValueError("Файл не является поддерживаемой картинкой")
                 if int(r.headers.get("content-length") or 0) > MAX_IMAGE_BYTES:
                     raise ValueError("Картинка больше 5 МБ")
@@ -185,8 +259,43 @@ async def _download_image_once(url: str) -> tuple[bytes, str]:
                     data += chunk
                     if len(data) > MAX_IMAGE_BYTES:
                         raise ValueError("Картинка больше 5 МБ")
-                return bytes(data), ctype
+                if ctype in IMAGE_TYPES:
+                    return bytes(data), ctype
+                return await asyncio.to_thread(normalize_image, bytes(data))
     raise ValueError("Слишком много редиректов")
+
+
+def sniff_image_type(data: bytes) -> str | None:
+    """Тип картинки по первым байтам. Серверы нередко отдают WebP и PNG как application/octet-stream
+    (так делает Google Cloud Storage для картинок блога Google), поэтому заголовку Content-Type не верим."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def normalize_image(data: bytes) -> tuple[bytes, str]:
+    """(данные, MIME) картинки, которую примут Telegram и ВКонтакте. JPEG, PNG, WebP и GIF — как есть, остальное,
+    что умеет открыть Pillow (AVIF, BMP, TIFF, ICO в большом размере), перекодируется в JPEG. Не картинка — ValueError."""
+    known = sniff_image_type(data)
+    if known:
+        return data, known
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as img:
+            img.load()
+            rgb = img.convert("RGB")
+        out = io.BytesIO()
+        rgb.save(out, "JPEG", quality=90, optimize=True)
+    except Exception as e:
+        raise ValueError("Файл не является поддерживаемой картинкой") from e
+    return out.getvalue(), "image/jpeg"
 
 
 _EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}

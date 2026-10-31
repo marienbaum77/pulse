@@ -13,6 +13,7 @@ from ..textutil import utcnow
 from .ingest import NEEDS_CONTENT_SQL
 from . import minhash as minhash_mod
 from . import scoring
+from . import aspects as aspects_mod
 from . import interest as interest_mod
 from .clustering_core import Cluster, OnlineClusterer, unit_vector
 
@@ -447,7 +448,7 @@ SELECT c.id, c.centroid, c.mode,
   (SELECT avg(i.topic_score) FROM items i
    WHERE i.cluster_id = c.id AND i.status = 'clustered' AND i.topic_score IS NOT NULL) AS topic_score,
   c.source_count, c.last_seen,
-  COALESCE((SELECT avg(a) FROM (SELECT DISTINCT s.id, s.authority AS a FROM items i JOIN sources s ON s.id = i.source_id
+  COALESCE((SELECT avg(a) FROM (SELECT DISTINCT s.id, LEAST(1, s.authority * COALESCE(s.performance, 1)) AS a FROM items i JOIN sources s ON s.id = i.source_id
             WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate')) t), 0.5) AS authority,
   (SELECT count(*) FROM items i WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate')
      AND i.published_at >= now() - interval '6 hours') AS recent,
@@ -531,6 +532,9 @@ CLUSTER_KIND_SQL = (
     "ORDER BY array_position(ARRAY['video','article','post'], i.kind), i.id LIMIT 1), 'article') END"
 )
 CONTENT_KINDS = ("news", "video", "article", "post")
+# Сколько кандидатов смотрит оценка интересности за один проход: сильный сюжет не должен теряться
+# за первой десяткой по близости к теме. Новых оценок (вызовов модели) за проход — interest.MAX_RATINGS_PER_RUN.
+RATING_POOL = 60
 # Источники, из которых недавно уже сделан пост (черновик в работе, на проверке или утверждён).
 _RECENT_SOURCES_SQL = (
     "SELECT i2.source_id FROM drafts d JOIN items i2 ON i2.cluster_id = ANY(d.cluster_ids) "
@@ -539,20 +543,24 @@ _RECENT_SOURCES_SQL = (
 )
 
 
-async def select_clusters(project: dict, limit: int, kinds: list[str] | None = None) -> list[dict]:
+async def select_clusters(project: dict, limit: int, kinds: list[str] | None = None, *, for_rating: bool = False) -> list[dict]:
     """Кандидаты на публикацию: открытые новостные сюжеты с достаточным числом материалов, уже опубликованные,
     которые заметно выросли (для поста-обновления), и открытые curated-материалы — им второй источник не нужен.
+    Новостной сюжет из меньшего числа материалов проходит, если модель оценила его не ниже single_min_interest;
+    for_rating берёт такие сюжеты и без оценки — это пул для оценки интересности.
     kinds ограничивает вид материала (слот контент-плана «только видео»), а source_cooldown_hours проекта
     отсекает сюжеты, все источники которых уже дали пост за последние часы."""
     kinds = [k for k in (kinds or []) if k in CONTENT_KINDS]
     cooldown = int(project.get("source_cooldown_hours") or 0)
+    single = project.get("single_min_interest")
     return await db.fetchall(
-        f"SELECT c.id, c.title, c.score, c.item_count, c.source_count, c.state, c.mode, {CLUSTER_KIND_SQL} AS kind, "
+        f"SELECT c.id, c.title, c.score, c.item_count, c.source_count, c.state, c.mode, c.interest, {CLUSTER_KIND_SQL} AS kind, "
         "ARRAY(SELECT DISTINCT i.source_id FROM items i WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate') "
         "AND i.source_id IS NOT NULL) AS source_ids FROM clusters c "
         f"WHERE c.project_id = %s AND c.score IS NOT NULL AND c.last_seen >= now() - {MODE_WINDOW_SQL} AND ("
         "  (c.mode = 'curated' AND c.state = 'open') OR "
-        "  (c.mode = 'news' AND c.state = 'open' AND c.item_count >= %s) OR "
+        "  (c.mode = 'news' AND c.state = 'open' AND (c.item_count >= %s "
+        "   OR (%s::real IS NOT NULL AND (%s OR c.interest >= %s)))) OR "
         "  (c.mode = 'news' AND c.state = 'published' AND c.item_count >= COALESCE(c.item_count_at_publish, 0) * 1.5 "
         "   AND c.item_count - COALESCE(c.item_count_at_publish, 0) >= 3)"
         ") AND (%s <= 0 OR COALESCE((c.score_breakdown->'topic_fit'->>'neutral')::boolean, false) "
@@ -561,9 +569,39 @@ async def select_clusters(project: dict, limit: int, kinds: list[str] | None = N
         "AND (%s <= 0 OR EXISTS (SELECT 1 FROM items i WHERE i.cluster_id = c.id AND i.status IN ('clustered', 'duplicate') "
         f"AND (i.source_id IS NULL OR i.source_id NOT IN ({_RECENT_SOURCES_SQL})))) "
         "ORDER BY COALESCE((c.score_breakdown->'topic_fit'->>'value')::float, 0.5) DESC, c.score DESC, c.id LIMIT %s",
-        (project["id"], *_windows(project), project["min_items"], project["topic_threshold"], project["topic_threshold"],
-         kinds, kinds, cooldown, cooldown, limit),
+        (project["id"], *_windows(project), project["min_items"], single, for_rating, single,
+         project["topic_threshold"], project["topic_threshold"], kinds, kinds, cooldown, cooldown, limit),
     )
+
+
+async def instant_remaining(project: dict) -> int:
+    """Сколько постов по порогу интересности ещё можно выпустить за последние 24 часа; 0 — порог выключен или лимит исчерпан."""
+    if project.get("instant_interest") is None:
+        return 0
+    row = await db.fetchone(
+        "SELECT count(*) AS n FROM drafts WHERE project_id = %s AND instant AND status <> 'failed' "
+        "AND created_at > now() - interval '24 hours'",
+        (project["id"],),
+    )
+    return max(0, int(project["instant_daily_limit"]) - row["n"])
+
+
+async def queue_instant(project: dict) -> list[int]:
+    """Ставит в очередь немедленную публикацию сюжетов, которые модель уже оценила не ниже порога.
+    Посты-обновления опубликованных сюжетов сюда не попадают: они ждут слота, как и раньше."""
+    remaining = await instant_remaining(project)
+    if not remaining:
+        return []
+    threshold = float(project["instant_interest"])
+    hot = [c for c in await select_clusters(project, RATING_POOL) if c["state"] == "open" and (c["interest"] or 0) >= threshold]
+    hot.sort(key=lambda c: -c["interest"])
+    if project.get("source_cooldown_hours"):
+        hot = diversify(hot)
+    ids = [c["id"] for c in hot[:remaining]]
+    if ids:
+        await jobs.enqueue("generate", {"project_id": project["id"], "kind": "post", "cluster_ids": ids, "instant": True},
+                           dedupe_key=f"instant:{project['id']}")
+    return ids
 
 
 def diversify(candidates: list[dict]) -> list[dict]:
@@ -620,11 +658,14 @@ async def process_project(project_id: int) -> dict:
         stats["duplicates"] = stats.get("duplicates", 0) + stats["lexical_duplicates"]
         stats["embedded"] = embedded
         stats["scored"] = await refresh_clusters(project)
-        # Оценка интересности сюжетов языковой моделью (после скоринга)
+        # Оценка интересности сюжетов языковой моделью (после скоринга); самые интересные публикуются сразу.
         if getattr(provider, "supports_chat", False):
-            candidates = await select_clusters(project, limit=20)
+            candidates = await select_clusters(project, RATING_POOL, for_rating=True)
             if candidates:
                 await interest_mod.rank_by_interest(project, provider, candidates, limit=len(candidates))
+                await queue_instant(project)
+        if getattr(provider, "supports_chat", False) and await aspects_mod.needs_aspects(project):
+            await aspects_mod.schedule(project_id)
     log.info("project %s processed: %s", project_id, stats)
     await events.notify("pipeline", project_id=project_id, stage="processed", **stats)
     if provider.name != "stub" and await needs_topic_backfill(project_id, bool(project_topic_aspects(project))):

@@ -1,0 +1,50 @@
+# Необязательная надстройка: DNS для api, worker и searxng идёт через DNS-over-HTTPS.
+# Нужна там, где незашифрованные DNS-ответы подменяются по дороге (провайдер, блокировки): например, www.youtube.com
+# резолвится в «такого домена нет», и ломаются ленты YouTube-каналов, субтитры и поиск видео. На сервере без такой
+# подмены не нужна.
+#   docker compose -f docker-compose.yml -f docker-compose.doh.yml up -d
+# Чтобы не писать -f каждый раз (и для десктоп-приложения), добавьте в .env:
+#   COMPOSE_FILE=docker-compose.yml;docker-compose.doh.yml      (Windows; в Linux и macOS разделитель «:»)
+#
+# Имена сервисов стека (db, ollama, searxng) по-прежнему резолвит встроенный DNS Docker, а внешние запросы
+# он пересылает этому резолверу. Адрес резолвера фиксированный: поле dns принимает только IP.
+services:
+  doh:
+    image: adguard/dnsproxy:v0.86.0
+    restart: unless-stopped
+    # Апстримы заданы IP-адресами, чтобы резолверу не нужен был обычный DNS для старта.
+    command:
+      - --listen=0.0.0.0
+      - --port=53
+      - --upstream=https://1.1.1.1/dns-query
+      - --upstream=https://8.8.8.8/dns-query
+      - --upstream-mode=parallel
+      - --cache
+    networks:
+      doh:
+        ipv4_address: 172.31.253.53
+
+  api:
+    dns: [172.31.253.53]
+    networks: [default, doh]
+    depends_on:
+      doh: { condition: service_started }
+
+  worker:
+    dns: [172.31.253.53]
+    networks: [default, doh]
+    depends_on:
+      doh: { condition: service_started }
+
+  # Поиск видео через движок youtube упирается в тот же DNS.
+  searxng:
+    dns: [172.31.253.53]
+    networks: [default, doh]
+    depends_on:
+      doh: { condition: service_started }
+
+networks:
+  doh:
+    ipam:
+      config:
+        - subnet: 172.31.253.0/24
