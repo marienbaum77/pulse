@@ -1570,5 +1570,185 @@
     "seen": 1793554968.51374,
     "ast_hash": "74699800b5a9e1c19843f2a1c212128f",
     "semantic_hash": ""
+  },
+  "backend/app/migrations/001_init.sql": {
+    "mtime": 1790534984.407057,
+    "seen": 1793555112.9245763,
+    "ast_hash": "f99eea12b0e7352c01900c3af97b8127",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/002_show_sources.sql": {
+    "mtime": 1789987704.0,
+    "seen": 1793555112.924578,
+    "ast_hash": "6a5e27dd1e7b5968371e8f87c5d736a1",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/003_generation_auto.sql": {
+    "mtime": 1792511589.8870895,
+    "seen": 1793555112.9245794,
+    "ast_hash": "eb628ded9d9a6fd7c8cea74f0ae86eb8",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/004_topic_threshold.sql": {
+    "mtime": 1790529565.5354447,
+    "seen": 1793555112.9245803,
+    "ast_hash": "c24bc9d96d26f3a764197808bf79d5e7",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/005_topic_threshold_default.sql": {
+    "mtime": 1790529565.5354447,
+    "seen": 1793555112.9245813,
+    "ast_hash": "3c8e554a81464a8d408c7e08700a04b6",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/006_topic_threshold_existing.sql": {
+    "mtime": 1790529565.551957,
+    "seen": 1793555112.9245825,
+    "ast_hash": "d9b897eab832a9c41a015dc2f68e21a5",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/007_ignored_items.sql": {
+    "mtime": 1790533888.692048,
+    "seen": 1793555112.9245837,
+    "ast_hash": "b6cac7d4f5ee239bff731c5e431aa002",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/008_topic_priority_remove_redundancy.sql": {
+    "mtime": 1790534984.407057,
+    "seen": 1793555112.9245849,
+    "ast_hash": "6e9aa857e9a4edb692635f457a922360",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/009_rss_article_content.sql": {
+    "mtime": 1790546508.339156,
+    "seen": 1793555112.9245858,
+    "ast_hash": "7c88196e4b898478ceec543e5dbea349",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/010_backfill_clustered_rss_articles.sql": {
+    "mtime": 1790547446.3614087,
+    "seen": 1793555112.924587,
+    "ast_hash": "09fdf03aaddc6d034722f7283e374409",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/011_publish_mode_full_auto.sql": {
+    "mtime": 1790600952.494565,
+    "seen": 1793555112.9245877,
+    "ast_hash": "47b9b7110e6a053a936769513a41ab90",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/012_images.sql": {
+    "mtime": 1790685600.1364396,
+    "seen": 1793555112.924589,
+    "ast_hash": "497163f8423c9c6572f606f90574156e",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/013_interest.sql": {
+    "mtime": 1790693068.1123576,
+    "seen": 1793555112.9245899,
+    "ast_hash": "6a0f1ead9b7c2ccbc3f7e70adaebbdd1",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/014_translation_cache.sql": {
+    "mtime": 1790841029.6121192,
+    "seen": 1793555112.9245906,
+    "ast_hash": "2e84392cf4ac114174bc869f444c23b7",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/015_llm_generation_default.sql": {
+    "mtime": 1790876665.1885333,
+    "seen": 1793555112.9245915,
+    "ast_hash": "7a681590e0ce5592370640c2023ebad4",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/016_search_feed_tracking.sql": {
+    "mtime": 1790886610.3276815,
+    "seen": 1793555112.9245927,
+    "ast_hash": "4ca82f3bae6ce1fcc1665f9136a59036",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/017_item_title_embeddings.sql": {
+    "mtime": 1790976441.4075632,
+    "seen": 1793555112.9245937,
+    "ast_hash": "913acd562aa8e24878e08c287a529f9c",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/018_topic_aspects.sql": {
+    "mtime": 1790980663.2256045,
+    "seen": 1793555112.9245944,
+    "ast_hash": "8212b77c6c78cecdb01a4315cc43f72e",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/019_add_vk_discord_channels.sql": {
+    "mtime": 1792345460.7950053,
+    "seen": 1793555112.9245956,
+    "ast_hash": "12f4e57bdf9b174d29a9f162dc44d7fa",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/020_add_minhash.sql": {
+    "mtime": 1792348500.9013422,
+    "seen": 1793555112.9245968,
+    "ast_hash": "d53e8fee9dcc6366895a6d814ae544a1",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/021_content_sources.sql": {
+    "mtime": 1792772122.4093113,
+    "seen": 1793555112.9245975,
+    "ast_hash": "a2d20d003c64f37a8084d4e6cb2355fe",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/022_content_plan.sql": {
+    "mtime": 1792772122.4098399,
+    "seen": 1793555112.9245985,
+    "ast_hash": "98637689e781889849964efc355f2e27",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/023_source_suggestions.sql": {
+    "mtime": 1792772122.4103663,
+    "seen": 1793555112.9245994,
+    "ast_hash": "7fb9ccb642a40fa6b5ce8900114a7fd4",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/024_interest_autopublish.sql": {
+    "mtime": 1792808657.031144,
+    "seen": 1793555112.9246004,
+    "ast_hash": "3f73f3899bb0dce7f5f9477ce3acee2c",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/025_interest_criteria.sql": {
+    "mtime": 1792814042.230741,
+    "seen": 1793555112.9246013,
+    "ast_hash": "b0cba713e76a29275bd57f568d6b8a4d",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/026_draft_video.sql": {
+    "mtime": 1792820158.4041426,
+    "seen": 1793555112.9246025,
+    "ast_hash": "d5c6a30dd50b5f7400824662b9a8b973",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/027_stats_and_replies.sql": {
+    "mtime": 1792821826.3390973,
+    "seen": 1793555112.9246035,
+    "ast_hash": "169a1ef09e4067f297cc2d9370a164b6",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/028_post_albums.sql": {
+    "mtime": 1792825206.8472803,
+    "seen": 1793555112.9246044,
+    "ast_hash": "228e37395a11099f8f97ed15314dadf6",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/029_slot_interest_floor.sql": {
+    "mtime": 1792868890.8137627,
+    "seen": 1793555112.9246051,
+    "ast_hash": "560b31b801e4371f65000e600fd19b65",
+    "semantic_hash": ""
+  },
+  "backend/app/migrations/030_article_max_length.sql": {
+    "mtime": 1792948734.3326938,
+    "seen": 1793555112.9246063,
+    "ast_hash": "741a1b0a63c0ee55af2cb5bfafb816c2",
+    "semantic_hash": ""
   }
 }

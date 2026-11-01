@@ -6,12 +6,12 @@
 - Unclassified: 24 file(s) not represented in the graph (top: (none) 8, .css 3, .test 2)
 
 ## Summary
-- 2727 nodes · 7034 edges · 192 communities (141 shown, 51 thin omitted)
+- 2789 nodes · 7094 edges · 214 communities (145 shown, 69 thin omitted)
 - Extraction: 91% EXTRACTED · 9% INFERRED · 0% AMBIGUOUS · INFERRED: 640 edges (avg confidence: 0.92)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `0dd5cc7c`
+- Built from commit: `417d7026`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -20,7 +20,7 @@
 - test_api.py
 - test_units.py
 - test_bot.py
-- Candidate
+- 001_init.sql
 - sources.py
 - ingest.py
 - web/package.json
@@ -29,14 +29,14 @@
 - types.ts
 - Store
 - test_integration.py
-- db.py
+- app/__init__.py
 - Spinner
 - minhash.py
 - scoring.py
 - content.py
-- fetchall
-- fake_web
-- Топовые узлы графа вызовов (Graphify God Nodes)
+- test_stats_related.py
+- jobs.py
+- backfill_topic_scores
 - same_picture
 - get_settings
 - OnlineClusterer
@@ -45,23 +45,23 @@
 - execute
 - Sources
 - tiktok_bot/stats.py
-- test_connectors.py
+- send_telegram
 - publisher.py
 - Trends.tsx
 - eval_clustering.py
-- Score
-- Block
+- Breakdown
+- generate.py
 - renderer.js
 - primary_links.py
 - fixtures.tsx
 - Bot
 - BRIEFING — 2026-10-29T14:38:50Z
-- test_post_quality.py
+- Frontend UI Styling & Design System Exploration (Nothing UI Redesign)
 - desktop/package.json
 - compilerOptions
-- ScheduleBody
+- GuardedAsyncTransport
 - utcnow
-- parse_channel_page
+- Score
 - Sources.tsx
 - searx.py
 - Telegram
@@ -71,7 +71,7 @@
 - test_content_platform.py
 - Drafts.tsx
 - Бот TikTok
-- fetchone
+- fetchall
 - env.js
 - Handoff Report: Nothing UI Styling Foundations (`index.css` & `main.tsx`)
 - test_post_becomes_screenshot_video_and_falls_back_to_slides
@@ -80,19 +80,19 @@
 - Pulse
 - Broker
 - test_media.py
-- generate_for_clusters
+- api/discovery.py
 - Устранение неполадок
 - Pulse — десктоп-приложение (Electron)
 - test_api.py
-- page_media
+- media.py
 - BRIEFING — 2026-10-29T14:33:45Z
 - Contributing to Pulse
 - runtime.js
 - main.js
 - Развёртывание на VPS
 - Установка
-- test_published_telegram_post_contains_the_editor_image
-- prepare
+- pick_extra_images
+- test_job_queue_dedupe_retry_and_reclaim
 - backup.sh
 - net.js
 - Каналы публикации
@@ -100,26 +100,26 @@
 - compose
 - health.js
 - pull_request_template.md
-- generate.py
+- default_image_urls
 - BRIEFING — 2026-10-29T14:45:00Z
 - CLAUDE.md
 - system.py
-- _enrich_article
-- fetch_html_or_archive
+- json
+- test_blocked_article_falls_back_to_wayback_snapshot
 - BRIEFING — 2026-10-29T14:34:00Z
-- drafts_service.py
-- youtube.py
+- channel_secrets.py
+- test_connectors.py
 - BRIEFING — 2026-10-29T14:33:30Z
 - BRIEFING — 2026-10-29T14:29:00Z
-- test_eval_script.py
+- 2. Конвейер обработки данных (Pipeline)
 - Panel Framework
 - BRIEFING — 2026-10-29T14:41:00Z
 - BRIEFING — 2026-10-29T14:33:30Z
-- admin.py
+- get_settings
 - test_drop_default_images_clears_citation_pictures
 - BRIEFING — 2026-10-29T14:01:00Z
 - Decision Council Configuration
-- http_get
+- download_image
 - BRIEFING — 2026-10-29T14:22:30Z
 - BRIEFING — 2026-10-29T14:46:00Z
 - BRIEFING — 2026-10-29T14:14:00Z
@@ -149,13 +149,13 @@
 - challenger_m1_2/DISPATCH.md
 - 4. Conclusion & Exact Replacement Specification
 - reviewer_m1_1/DISPATCH.md
-- create_channel
+- channels.py
 - Progress Tracking — Challenger M1_2
 - Progress — e2e_test_writer
 - orchestrator_gen2/progress.md
 - orchestrator/progress.md
 - Progress — Milestone 1: Design System & Shared Foundations
-- _ShortenProvider
+- Резюме системы Pulse (System Architecture & Operational Guide)
 - Бэкапы и восстановление
 - auditor_m1_1/plan.md
 - auditor_m1_1/progress.md
@@ -185,24 +185,23 @@
 - reviewer_m1_2/progress.md
 - sub_orch_m1/plan.md
 - worker_m1/plan.md
-- StubProvider
-- automatic_review
+- conftest.py
+- Handoff Report: Milestone 1 — Design System & Shared Foundations
 - BRIEFING — 2026-10-29T14:30:00Z
-- generate_aspects
+- test_interest_publish.py
 - BRIEFING — 2026-10-29T14:11:10Z
-- post_media
-- find_origin
+- cancel_job
+- 4.2 Step-by-Step Technical Implementation Plan
 - Handoff Report: Build, Test, API Contracts & E2E Testing Strategy for `web/`
-- video_id
-- image_dimensions
+- generate_job
+- 1.2 Inventory of Clutter & Secondary Elements across the 5 Target Pages
 - rating_prompt
-- VectorIndex
+- _reply_form
 - nws
 - ProjectBody
-- _NumpyBinaryLoader
-- _NumpyLoader
+- db.py
+- 014_translation_cache.sql
 - topic_passes_threshold
-- test_manual_schedule_run_does_not_force_editor_review
 
 ## God Nodes (most connected - your core abstractions)
 1. `fetchone()` - 142 edges
@@ -221,45 +220,45 @@
   .agents/teamwork/e2e_test_writer/BRIEFING.md → web/e2e/fixtures.tsx
 - `Page 2: `Trends.tsx` (Lines 1–415)` --references--> `ArrivalStrip()`  [INFERRED]
   .agents/teamwork/explorer_survey_2/handoff.md → web/src/components/charts.tsx
+- `4.1 Reasoning from Observations to Architecture` --references--> `Score()`  [INFERRED]
+  .agents/teamwork/explorer_survey_1/handoff.md → web/src/components/charts.tsx
+- `6. Conclusion` --references--> `Score()`  [INFERRED]
+  .agents/teamwork/explorer_survey_1/handoff.md → web/src/components/charts.tsx
 - `5. Verification Method` --references--> `Score()`  [INFERRED]
   .agents/teamwork/explorer_survey_2/handoff.md → web/src/components/charts.tsx
-- `3.3 Geometry & Component Architecture Standards` --references--> `Badge()`  [INFERRED]
-  .agents/teamwork/explorer_survey_1/handoff.md → web/src/components/ui.tsx
-- `Не открывается сайт` --references--> `api()`  [INFERRED]
-  docs/troubleshooting.md → web/src/lib/api.ts
 
 ## Import Cycles
 - None detected.
 
-## Communities (192 total, 51 thin omitted)
+## Communities (214 total, 69 thin omitted)
 
 ### Community 0 - "render.py"
-Cohesion: 0.08
-Nodes (25): _ffmpeg(), gif_to_mp4(), test_gif_is_converted_to_mp4(), test_video_keeps_its_frame_rate_and_scrolling_is_smooth(), _background(), clip_fps(), duration_for(), ffmpeg_exe() (+17 more)
+Cohesion: 0.11
+Nodes (21): test_video_keeps_its_frame_rate_and_scrolling_is_smooth(), _background(), clip_fps(), duration_for(), final_slide(), _fit_text(), _font(), _footer() (+13 more)
 
 ### Community 1 - "test_api.py"
-Cohesion: 0.05
-Nodes (29): _ip(), _is_trusted_proxy(), login(), LoginBody, logout(), me(), _parse_trusted_networks(), GuardedAsyncTransport (+21 more)
+Cohesion: 0.10
+Nodes (17): _ip(), _is_trusted_proxy(), login(), LoginBody, logout(), me(), _parse_trusted_networks(), check_login_rate() (+9 more)
 
 ### Community 2 - "test_units.py"
-Cohesion: 0.05
-Nodes (34): parse_opml(), Settings, AdvisoryLock, check_text(), normalize_generated_post(), parse_output(), google_news_search_url(), max_aspect_similarity() (+26 more)
+Cohesion: 0.06
+Nodes (34): AdvisoryLock, automatic_review(), check_text(), gate_auto_publish(), normalize_generated_post(), google_news_search_url(), parse_topic_aspects(), sources_footer() (+26 more)
 
 ### Community 3 - "test_bot.py"
-Cohesion: 0.09
-Nodes (26): _card(), _clip(), _info(), no_render(), _probe(), test_capture_finds_card_player_and_hides_views(), test_extract_code_from_redirect_address(), test_long_paragraph_is_split_by_sentences() (+18 more)
+Cohesion: 0.11
+Nodes (23): _card(), _clip(), _info(), no_render(), _probe(), test_extract_code_from_redirect_address(), test_long_paragraph_is_split_by_sentences(), test_post_slightly_taller_than_safe_zone_is_shrunk_not_scrolled() (+15 more)
 
-### Community 4 - "Candidate"
-Cohesion: 0.14
-Nodes (11): Candidate, cap_per_type(), collect(), note(), _existing_keys(), _host(), _rate(), _skipped() (+3 more)
+### Community 4 - "001_init.sql"
+Cohesion: 0.09
+Nodes (30): audit_log, channels, clusters, clusters_project_state, drafts, drafts_project_status, items, items_cluster (+22 more)
 
 ### Community 5 - "sources.py"
-Cohesion: 0.08
-Nodes (26): accept_suggestion(), AcceptBody, DiscoveryBody, dismiss_suggestion(), start_discovery(), _suggestion(), add_connector_source(), ConnectorBody (+18 more)
+Cohesion: 0.13
+Nodes (14): ConnectorBody, ConnectorOptions, ConnectorPreviewBody, create_connector_source(), _known_hashes(), list_sources(), parse_opml(), preview_connector() (+6 more)
 
 ### Community 6 - "ingest.py"
-Cohesion: 0.09
-Nodes (6): parse_aspects(), unit_vector(), parse_rating(), entities(), _unit(), test_entities_are_names_not_sentence_starts()
+Cohesion: 0.07
+Nodes (32): feed_entry_image(), _from_html(), normalize_image_url(), fetch(), _is_reddit(), listing_url(), parse_feed(), parse_channel_page() (+24 more)
 
 ### Community 7 - "web/package.json"
 Cohesion: 0.05
@@ -270,124 +269,128 @@ Cohesion: 0.11
 Nodes (7): test_big_video_is_uploaded_in_chunks(), test_oauth_and_inbox_upload(), handler(), test_stats_sync_finds_published_videos_and_exports_csv(), chunk_ranges(), TikTok, TikTokError
 
 ### Community 9 - "context.tsx"
-Cohesion: 0.07
-Nodes (43): 1.1 Boundary Adherence, 1.3 Independent Verification Tool Executions, 1. Observation, client, @fontsource-variable/golos-text, react, react-dom, react-router-dom (+35 more)
+Cohesion: 0.08
+Nodes (39): client, @fontsource-variable/golos-text, react, react-dom, @tanstack/react-query, Admin, App(), Plan (+31 more)
 
 ### Community 10 - "types.ts"
 Cohesion: 0.08
-Nodes (36): fmtNum(), BREAKDOWN_HINTS, BREAKDOWN_LABELS, CHANNEL_TYPES, LEAD_OPTIONS, PUB_STATUS, SCORE_HINTS, SCORE_LABELS (+28 more)
+Nodes (35): BREAKDOWN_HINTS, BREAKDOWN_LABELS, CHANNEL_TYPES, LEAD_OPTIONS, PUB_STATUS, SCORE_HINTS, SCORE_LABELS, SLOT_KINDS (+27 more)
 
 ### Community 12 - "test_integration.py"
-Cohesion: 0.09
-Nodes (50): generate_from_cluster(), regenerate_draft(), reject(), generate_job(), run_generation(), import_manual(), rank_by_interest(), diversify() (+42 more)
+Cohesion: 0.11
+Nodes (47): generate_from_cluster(), regenerate_draft(), fetchone(), reject(), run_generation(), import_manual(), rank_by_interest(), needs_topic_backfill() (+39 more)
 
-### Community 13 - "db.py"
-Cohesion: 0.06
-Nodes (17): schedule_slots(), get_project(), list_projects(), prompt_defaults(), get_settings(), _configure(), migrate(), open_pool() (+9 more)
+### Community 13 - "app/__init__.py"
+Cohesion: 0.09
+Nodes (11): schedule_slots(), create_schedule(), delete_schedule(), list_schedules(), run_schedule(), ScheduleBody, update_schedule(), _with_next() (+3 more)
 
 ### Community 14 - "Spinner"
-Cohesion: 0.20
-Nodes (38): 1.2 Source Code Analysis, Objective, Progress — Milestone 1 Challenger, Objective, Investigation State, Key Decisions Made, Objective, 1.1 Existing Component Inventory & Source Analysis (+30 more)
+Cohesion: 0.14
+Nodes (52): 1.2 Source Code Analysis, Objective, Progress — Milestone 1 Challenger, Objective, Investigation State, Key Decisions Made, Objective, 1.1 Existing Component Inventory & Source Analysis (+44 more)
 
 ### Community 15 - "minhash.py"
-Cohesion: 0.12
-Nodes (11): compute_minhash(), minhash_jaccard(), MinHashLSHIndex, normalize_text(), shingle_text(), deduplicate_new(), test_minhash_empty_and_zero_handling(), test_minhash_identical_texts() (+3 more)
+Cohesion: 0.10
+Nodes (12): compute_minhash(), minhash_jaccard(), MinHashLSHIndex, normalize_text(), shingle_text(), deduplicate_new(), _unit(), test_minhash_empty_and_zero_handling() (+4 more)
 
 ### Community 16 - "scoring.py"
-Cohesion: 0.17
-Nodes (18): 3. Caveats, 1.1. Package Management & Build Tooling, 1.2. Existing Test Catalog & Test Execution Status, 1.4. Story Weight ("Вес сюжета") Usage in Existing UI, 1. Observation, Backend API Contracts (Immutable), compute_curated_features(), compute_features() (+10 more)
+Cohesion: 0.27
+Nodes (6): compute_curated_features(), compute_features(), cosine(), depth(), engagement(), _topic_fit()
 
 ### Community 17 - "content.py"
-Cohesion: 0.08
-Nodes (28): approve_draft(), ApproveBody, cancel_generation_job(), clear_project_clusters(), draft_extra_image(), draft_image(), draft_video(), DraftPatch (+20 more)
+Cohesion: 0.13
+Nodes (19): ApproveBody, draft_extra_image(), draft_image(), draft_video(), DraftPatch, edit_draft(), GenerateBody, generation_queue() (+11 more)
 
-### Community 18 - "fetchall"
-Cohesion: 0.07
-Nodes (23): get_discovery(), content_plan(), create_project(), update_project(), run_schedule(), list_sources(), project_stats(), refresh_stats() (+15 more)
+### Community 18 - "test_stats_related.py"
+Cohesion: 0.11
+Nodes (18): project_stats(), entities(), find_related(), collect_channel(), collect_channel_stats(), public_name(), recompute_project(), settled_posts() (+10 more)
 
-### Community 20 - "Топовые узлы графа вызовов (Graphify God Nodes)"
-Cohesion: 0.08
-Nodes (16): advisory_lock(), current_age_seconds(), Retry, fallback_queries(), generate_queries(), backfill_topic_scores(), backfill_topic_scores_job(), embed_new() (+8 more)
+### Community 19 - "jobs.py"
+Cohesion: 0.12
+Nodes (12): get_project(), list_projects(), prompt_defaults(), claim(), complete(), defer(), fail(), _keep_lease() (+4 more)
+
+### Community 20 - "backfill_topic_scores"
+Cohesion: 0.16
+Nodes (8): fallback_queries(), generate_queries(), backfill_topic_scores(), embed_new(), load_aspect_vectors(), max_aspect_similarity(), project_topic_aspects(), test_max_aspect_similarity_takes_closest_aspect()
 
 ### Community 21 - "same_picture"
 Cohesion: 0.32
 Nodes (5): _array(), _best_match(), _best_scale(), _gray(), same_picture()
 
 ### Community 22 - "get_settings"
-Cohesion: 0.15
-Nodes (7): _log_call(), OpenAICompatProvider, _post_with_retry(), _provider_error_detail(), test_embeddings_and_chat_can_use_different_servers(), test_chat_generation_can_be_disabled_while_embeddings_remain_configured(), test_provider_error_detail_includes_read_timeout_limit_and_http_body()
+Cohesion: 0.07
+Nodes (14): classify_model(), LLMUnavailable, _log_call(), _models_at(), _native_base(), OpenAICompatProvider, _post_with_retry(), _provider_error_detail() (+6 more)
 
 ### Community 23 - "OnlineClusterer"
-Cohesion: 0.15
-Nodes (11): Cluster, OnlineClusterer, _cluster_mode(), cluster_new(), mode_window(), run_online(), test_cluster_roundtrip_through_db_representation(), test_online_clusterer_groups_similar_and_splits_different() (+3 more)
+Cohesion: 0.11
+Nodes (13): Cluster, OnlineClusterer, unit_vector(), _cluster_mode(), cluster_new(), mode_window(), VectorIndex, run_online() (+5 more)
 
 ### Community 24 - "test_content_platform.py"
-Cohesion: 0.07
-Nodes (22): enrich_articles(), MiniServer, test_resolve_and_enrich_follow_google_news_to_the_article(), test_channel_check_never_posts_to_telegram(), test_legacy_clustered_rss_item_is_enriched_without_rewriting_draft(), test_rss_ingest_from_local_feed(), test_short_rss_item_is_enriched_from_article_before_project_processing(), test_telegram_message_has_no_markers_and_named_sources() (+14 more)
+Cohesion: 0.06
+Nodes (24): enrich_articles(), pick_video(), MiniServer, test_batch_response_is_parsed(), test_resolve_and_enrich_follow_google_news_to_the_article(), test_channel_check_never_posts_to_telegram(), test_legacy_clustered_rss_item_is_enriched_without_rewriting_draft(), test_rss_ingest_from_local_feed() (+16 more)
 
 ### Community 25 - ".handler"
-Cohesion: 0.12
-Nodes (6): _immediate_sleep(), test_discord_publisher_sends_rich_embed(), test_image_download_retries_temporary_transport_failure(), test_post_with_retry_retries_transient_gateway_errors(), test_telegram_long_post_keeps_image_preview_with_text(), test_vk_publisher_posts_to_wall()
+Cohesion: 0.15
+Nodes (4): FakeTelegram, test_discord_publisher_sends_rich_embed(), test_published_telegram_post_contains_the_editor_image(), test_telegram_long_post_keeps_image_preview_with_text()
 
 ### Community 26 - "execute"
 Cohesion: 0.07
-Nodes (36): clear_drafts(), resolve_publication(), execute(), notify(), claim(), complete(), defer(), fail() (+28 more)
+Nodes (33): delete_channel(), approve_draft(), clear_drafts(), exclude_cluster(), import_items(), reject_draft(), reopen_cluster(), resolve_publication() (+25 more)
 
 ### Community 27 - "Sources"
-Cohesion: 0.15
-Nodes (37): Requirements & Methodology, 2. Logic Chain, Progress: Explorer M1.2 (UI Components Modernization), Mission, 2026-10-29T14:03:29Z, Completion Criteria, Identity & Paths, Objective (+29 more)
+Cohesion: 0.14
+Nodes (40): Requirements & Methodology, 2. Logic Chain, Progress: Explorer M1.2 (UI Components Modernization), Mission, 2026-10-29T14:03:29Z, Completion Criteria, Identity & Paths, Objective (+32 more)
 
 ### Community 28 - "tiktok_bot/stats.py"
-Cohesion: 0.20
-Nodes (7): test_due_takes_one_snapshot_per_mark(), due(), export_csv(), _iso(), match_videos(), _norm(), sync()
+Cohesion: 0.14
+Nodes (8): test_due_takes_one_snapshot_per_mark(), due(), export_csv(), _iso(), latest(), match_videos(), _norm(), sync()
 
-### Community 29 - "test_connectors.py"
-Cohesion: 0.16
-Nodes (13): item_mode(), parse_queries(), parse_ratings(), content_format(), _links(), _reddit_entry(), test_content_format_prefers_video_for_curated_and_news_otherwise(), test_item_mode_follows_profile_and_source_override() (+5 more)
+### Community 29 - "send_telegram"
+Cohesion: 0.20
+Nodes (12): download_video(), classify_image_exception(), classify_telegram(), _json(), _media_caption(), _send_album(), send_console(), send_telegram() (+4 more)
 
 ### Community 30 - "publisher.py"
-Cohesion: 0.06
-Nodes (42): download_image(), _download_image_once(), guarded_client(), batch_request(), parse_batch(), resolve(), _accepted_type(), download_video() (+34 more)
+Cohesion: 0.15
+Nodes (11): _download_image_once(), guarded_client(), check_channel(), _check_discord(), _check_telegram(), _check_vk(), _check_webhook(), loop() (+3 more)
 
 ### Community 31 - "Trends.tsx"
-Cohesion: 0.09
-Nodes (44): lucide-react, DiscoveryPanel(), TYPE_LABELS, ErrorNote(), api(), ApiError, messageFrom(), Opts (+36 more)
+Cohesion: 0.11
+Nodes (31): lucide-react, react-router-dom, DiscoveryPanel(), TYPE_LABELS, api(), ApiError, messageFrom(), Opts (+23 more)
 
 ### Community 32 - "eval_clustering.py"
-Cohesion: 0.17
+Cohesion: 0.10
 Nodes (11): get_provider(), ari(), bcubed(), embed(), explain_errors(), main(), metrics(), nmi() (+3 more)
 
-### Community 33 - "Score"
-Cohesion: 0.06
-Nodes (53): Key Decisions Made, 2. Logic Chain, 3. Caveats, 4. Conclusion, 5. Verification Method, Forensic Audit Report: Milestone 1 — Design System & Shared Foundations, Forensic Audit Summary, Investigation State (+45 more)
+### Community 33 - "Breakdown"
+Cohesion: 0.27
+Nodes (15): Investigation State, Objective, 1.1 `web/src/components/Layout.tsx` (102 lines), 1.2 `web/src/components/Thumb.tsx` (9 lines), 1.3 `web/src/components/charts.tsx` (104 lines), 1. Observation, 2. Logic Chain, 3. Caveats (+7 more)
 
-### Community 34 - "Block"
-Cohesion: 0.15
-Nodes (14): Block, blocks_prompt(), _citation(), decide_use_llm(), extractive_text(), render_system(), test_curated_auto_mode_uses_model_even_for_single_source(), test_format_prompts_and_custom_template_override() (+6 more)
+### Community 34 - "generate.py"
+Cohesion: 0.05
+Nodes (47): keep_links(), to_plain(), to_telegram_html(), visible(), Block, build_blocks(), spread_sentences(), answer_tokens() (+39 more)
 
 ### Community 35 - "renderer.js"
 Cohesion: 0.24
 Nodes (16): app, escapeHtml(), foot, refresh(), render(), saveAndStart(), setFoot(), start() (+8 more)
 
 ### Community 36 - "primary_links.py"
-Cohesion: 0.13
-Nodes (13): classify(), content_root(), extract_from_html(), _host(), _label(), merge(), _on(), pick() (+5 more)
+Cohesion: 0.16
+Nodes (11): classify(), content_root(), extract_from_html(), _host(), _label(), merge(), _on(), pick() (+3 more)
 
 ### Community 37 - "fixtures.tsx"
 Cohesion: 0.12
 Nodes (26): 1.1. Delivered Test Files & Infrastructure, 5.2. Files to Inspect, 1.2. Self-Contained Network Mocking, @testing-library/react, @testing-library/user-event, vitest, createMockState(), mockClusters (+18 more)
 
 ### Community 38 - "Bot"
-Cohesion: 0.11
-Nodes (9): test_only_forwarded_posts_become_videos(), test_parse_post_album_and_forward(), Bot, latest(), AlbumBuffer, forwarded_post(), merge_album(), parse_post() (+1 more)
+Cohesion: 0.09
+Nodes (13): test_check_url_blocks_private(), test_capture_finds_card_player_and_hides_views(), test_parse_post_album_and_forward(), Config, load(), kind_of(), capture(), embed_url() (+5 more)
 
 ### Community 39 - "BRIEFING — 2026-10-29T14:38:50Z"
-Cohesion: 0.18
-Nodes (10): Artifact Index, Attack Surface, Audit Progress, Audit Scope, BRIEFING — 2026-10-29T14:38:50Z, Current Parent, 🔒 Key Constraints, Loaded Skills (+2 more)
+Cohesion: 0.17
+Nodes (11): Artifact Index, Attack Surface, Audit Progress, Audit Scope, BRIEFING — 2026-10-29T14:38:50Z, Current Parent, 🔒 Key Constraints, Key Decisions Made (+3 more)
 
-### Community 40 - "test_post_quality.py"
-Cohesion: 0.18
-Nodes (8): keep_links(), to_plain(), to_telegram_html(), visible(), spread_sentences(), test_keep_links_drops_invented_urls(), test_markup_converts_bold_and_links_for_each_platform(), test_spread_sentences_keeps_short_article_and_samples_the_whole_long_one()
+### Community 40 - "Frontend UI Styling & Design System Exploration (Nothing UI Redesign)"
+Cohesion: 0.14
+Nodes (13): 1.1 Styling Framework & Build Configuration, 1.2 Story Weight ("Вес сюжета") Component Usage, 1.3 Baseline Verification, 1. Observation, 2.2 Global Layout in `web/src/components/Layout.tsx`, 2. Shared Components Catalog & Props Analysis, 3.1 Color Palette Architecture, 3.2 Typography System (+5 more)
 
 ### Community 41 - "desktop/package.json"
 Cohesion: 0.12
@@ -397,29 +400,29 @@ Nodes (15): author, description, devDependencies, electron, electron-builder, ma
 Cohesion: 0.12
 Nodes (15): compilerOptions, isolatedModules, jsx, lib, module, moduleResolution, noEmit, noFallthroughCasesInSwitch (+7 more)
 
-### Community 43 - "ScheduleBody"
-Cohesion: 0.19
-Nodes (5): create_schedule(), list_schedules(), ScheduleBody, update_schedule(), _with_next()
+### Community 43 - "GuardedAsyncTransport"
+Cohesion: 0.15
+Nodes (4): GuardedAsyncTransport, _host_header(), _pick_ip(), Безопасность
 
 ### Community 44 - "utcnow"
-Cohesion: 0.26
-Nodes (16): collect_channel_stats(), fire_schedules(), utcnow(), _add(), _curated_project(), _run_queued_generation(), _schedule(), _source() (+8 more)
+Cohesion: 0.19
+Nodes (22): current_age_seconds(), ensure_embedding_space(), process_project(), process_project_job(), recover_stale(), fire_schedules(), poll_sources(), tick() (+14 more)
 
-### Community 45 - "parse_channel_page"
-Cohesion: 0.22
-Nodes (8): parse_channel_page(), parse_stats(), parse_views(), _title(), test_parse_telegram_channel_page(), test_parse_views(), test_feed_and_telegram_items_keep_primary_links(), test_parse_stats_reads_views_and_reactions()
+### Community 45 - "Score"
+Cohesion: 0.20
+Nodes (11): 1.1 Boundary Adherence, 1.3 Independent Verification Tool Executions, 1. Observation, 2. Logic Chain, 3. Caveats, 4. Conclusion, 5. Verification Method, Forensic Audit Report: Milestone 1 — Design System & Shared Foundations (+3 more)
 
 ### Community 46 - "Sources.tsx"
-Cohesion: 0.09
-Nodes (21): 1.2 Inventory of Clutter & Secondary Elements across the 5 Target Pages, Page 1: `Drafts.tsx` (Lines 1–530), Page 2: `Trends.tsx` (Lines 1–415), Page 3: `Overview.tsx` (Lines 1–205), Page 4: `Sources.tsx` (Lines 1–432), Page 5: `Publications.tsx` (Lines 1–88), ConnectorPreview, ConnectorType (+13 more)
+Cohesion: 0.14
+Nodes (14): ConnectorPreview, ConnectorType, ContentMode, blank(), BLANK_OPTIONS, CONNECTORS, describe(), Form (+6 more)
 
 ### Community 47 - "searx.py"
-Cohesion: 0.15
-Nodes (14): feed_entry_image(), _from_html(), normalize_image_url(), fetch(), _language(), parse_results(), _published(), publisher() (+6 more)
+Cohesion: 0.09
+Nodes (21): fetch(), _language(), parse_results(), _published(), publisher(), search(), SearchUnavailable, discover_sources_job() (+13 more)
 
 ### Community 48 - "Telegram"
-Cohesion: 0.16
-Nodes (6): test_get_updates_sends_long_polling_timeout_to_telegram(), Config, load(), amain(), Telegram, TelegramError
+Cohesion: 0.18
+Nodes (4): test_get_updates_sends_long_polling_timeout_to_telegram(), amain(), Telegram, TelegramError
 
 ### Community 49 - "README.md"
 Cohesion: 0.22
@@ -435,7 +438,7 @@ Nodes (16): MinHash (дедуп), Интересность сюжетов, Ис�
 
 ### Community 52 - "test_content_platform.py"
 Cohesion: 0.16
-Nodes (17): insert_items(), InsertStats, hash_password(), _editor(), _entry(), _profile(), test_connector_api_previews_and_creates_site_source(), test_curated_clusters_live_for_the_curated_window() (+9 more)
+Nodes (15): ingest_source(), insert_items(), InsertStats, _editor(), _entry(), _profile(), test_connector_api_previews_and_creates_site_source(), test_connector_failure_is_recorded_on_source() (+7 more)
 
 ### Community 53 - "Drafts.tsx"
 Cohesion: 0.15
@@ -445,9 +448,9 @@ Nodes (19): Analysis of `Drafts.tsx` (530 Lines), Code Layout, `Drafts.tsx` ↔ 
 Cohesion: 0.15
 Nodes (12): 1. Бот в Telegram, 2. Приложение TikTok, 3. Переменные окружения, 4. Запуск и подключение TikTok, Бот TikTok, Звук, Команды, Настройка (+4 more)
 
-### Community 55 - "fetchone"
-Cohesion: 0.09
-Nodes (32): import_items(), create_search_source(), create_source(), fetch_source(), import_opml(), preview_search(), SourceBody, update_source() (+24 more)
+### Community 55 - "fetchall"
+Cohesion: 0.08
+Nodes (27): generate_now(), get_discovery(), create_search_source(), create_source(), fetch_source(), import_opml(), preview_search(), SourceBody (+19 more)
 
 ### Community 56 - "env.js"
 Cohesion: 0.24
@@ -458,28 +461,28 @@ Cohesion: 0.13
 Nodes (14): 1.1 Architecture & Build Configuration, 1.2 Current State of `web/src/main.tsx`, 1.3 Current State of `web/src/index.css`, 1. Observation, 2. Logic Chain, 3. Caveats, 4. Conclusion & Exact Replacement Specification, 5.1 Verification Commands (+6 more)
 
 ### Community 58 - "test_post_becomes_screenshot_video_and_falls_back_to_slides"
-Cohesion: 0.14
-Nodes (8): cfg(), FakeTelegram, FakeTikTok, _forward(), test_export_command_and_status_with_stats(), test_owner_commands_and_strangers(), test_post_becomes_screenshot_video_and_falls_back_to_slides(), fake_capture()
+Cohesion: 0.12
+Nodes (10): cfg(), FakeTelegram, FakeTikTok, _forward(), test_export_command_and_status_with_stats(), test_only_forwarded_posts_become_videos(), test_owner_commands_and_strangers(), test_post_becomes_screenshot_video_and_falls_back_to_slides() (+2 more)
 
 ### Community 59 - "[1.0.1] - 2026-10-07"
 Cohesion: 0.18
 Nodes (10): [1.0.1] - 2026-10-07, Added, Added, Changed, Changed, Changed, Changelog, Fixed (+2 more)
 
 ### Community 60 - "site.py"
-Cohesion: 0.23
-Nodes (9): article_links(), discover(), feed_links(), fetch(), _host(), _looks_like_article(), _probe_sites(), fetch_html() (+1 more)
+Cohesion: 0.10
+Nodes (17): _rss(), article_links(), discover(), feed_links(), fetch(), _host(), _looks_like_article(), fetch() (+9 more)
 
 ### Community 61 - "Pulse"
 Cohesion: 0.22
 Nodes (9): Pulse, Архитектура, Быстрый старт, Возможности, Документация, Как это работает, Ограничения, Структура репозитория (+1 more)
 
 ### Community 63 - "test_media.py"
-Cohesion: 0.13
-Nodes (14): analyze(), _encode(), _picture(), test_album_skips_content_duplicates_of_cover_and_extras(), test_classify_album_response_uses_first_message(), test_cover_prefers_origin_illustrations_and_extras_are_checked(), no_defaults(), ok() (+6 more)
-
-### Community 64 - "generate_for_clusters"
 Cohesion: 0.17
-Nodes (10): build_blocks(), answer_tokens(), fit_title(), generate_for_clusters(), shorten_post(), LLMUnavailable, list_items(), promised_count() (+2 more)
+Nodes (11): analyze(), _page_media(), _encode(), _picture(), test_classify_album_response_uses_first_message(), test_find_origin_prefers_article_slug_over_technology_docs(), test_page_media_keeps_illustrations_and_video_sources(), test_page_media_skips_related_cards_and_ads() (+3 more)
+
+### Community 64 - "api/discovery.py"
+Cohesion: 0.29
+Nodes (7): accept_suggestion(), AcceptBody, DiscoveryBody, dismiss_suggestion(), start_discovery(), _suggestion(), add_connector_source()
 
 ### Community 65 - "Устранение неполадок"
 Cohesion: 0.25
@@ -493,9 +496,9 @@ Nodes (6): Pulse — десктоп-приложение (Electron), Запус�
 Cohesion: 0.29
 Nodes (15): _client(), _drain(), test_admin_password_reset_command(), test_article_search_creates_localized_google_news_rss_source(), allow_public_url(), test_article_search_preview_returns_titles_publishers_and_new_count(), sample_feed(), test_auth_csrf_and_rbac() (+7 more)
 
-### Community 68 - "page_media"
-Cohesion: 0.22
-Nodes (5): _img_src(), og_image(), page_media(), _too_small(), _video_src()
+### Community 68 - "media.py"
+Cohesion: 0.09
+Nodes (17): fetch_html_or_archive(), _accepted_type(), _analyzed(), brand(), _ffmpeg(), find_origin(), gif_to_mp4(), _host() (+9 more)
 
 ### Community 69 - "BRIEFING — 2026-10-29T14:33:45Z"
 Cohesion: 0.17
@@ -521,13 +524,13 @@ Nodes (6): 1. Подготовьте сервер и домен, 2. Скачай
 Cohesion: 0.33
 Nodes (5): Windows: установщик, Десктоп-приложение, Ручной запуск, Скриншоты первого запуска, Установка
 
-### Community 75 - "test_published_telegram_post_contains_the_editor_image"
-Cohesion: 0.22
-Nodes (5): image_bytes(), FakeTelegram, test_image_is_downloaded_once_and_served_from_disk_cache(), test_published_telegram_post_contains_the_editor_image(), download()
+### Community 75 - "pick_extra_images"
+Cohesion: 0.14
+Nodes (10): image_key(), pick_extra_images(), _repeats(), test_album_skips_content_duplicates_of_cover_and_extras(), image_bytes(), test_cover_prefers_origin_illustrations_and_extras_are_checked(), no_defaults(), ok() (+2 more)
 
-### Community 76 - "prepare"
-Cohesion: 0.12
-Nodes (12): prepare(), normalize_subreddit(), normalize_channel(), channel_id_from_page(), classify_input(), resolve(), public_name(), test_channel_id_is_found_on_channel_page() (+4 more)
+### Community 76 - "test_job_queue_dedupe_retry_and_reclaim"
+Cohesion: 0.17
+Nodes (5): handler(), Retry, test_job_queue_can_reserve_generate_lane(), test_job_queue_dedupe_retry_and_reclaim(), _b()
 
 ### Community 77 - "backup.sh"
 Cohesion: 0.60
@@ -542,8 +545,8 @@ Cohesion: 0.40
 Nodes (5): Discord, Telegram, Webhook, ВКонтакте, Каналы публикации
 
 ### Community 80 - "images.py"
-Cohesion: 0.08
-Nodes (20): _channel_for_use(), test_channel(), _aes_key(), decrypt_channel_config(), decrypt_value(), encrypt_channel_config(), encrypt_plaintext_channel_secrets(), encrypt_value() (+12 more)
+Cohesion: 0.10
+Nodes (18): cache_dir(), _cache_file(), cover_quality(), get_image(), image_dimensions(), image_key(), ImageUnavailable, _jpeg_dimensions() (+10 more)
 
 ### Community 81 - "compose"
 Cohesion: 0.83
@@ -553,37 +556,33 @@ Nodes (3): cleanup(), compose(), test-docker.sh script
 Cohesion: 0.50
 Nodes (3): Как тестировал, Описание изменений, Тип изменения
 
-### Community 84 - "generate.py"
-Cohesion: 0.10
-Nodes (18): cover_quality(), get_image(), ImageUnavailable, _cover_ok(), _create_and_fill(), default_image_urls(), drop_default_images(), _image_bytes() (+10 more)
+### Community 84 - "default_image_urls"
+Cohesion: 0.33
+Nodes (4): default_image_urls(), drop_default_images(), pick_cover_image(), test_default_image_urls_detects_site_wide_pictures()
 
 ### Community 85 - "BRIEFING — 2026-10-29T14:45:00Z"
 Cohesion: 0.17
 Nodes (11): Active Timers, Artifact Index, BRIEFING — 2026-10-29T14:45:00Z, Current Parent, 🔒 Key Constraints, Key Decisions Made, Mission, 🔒 My Identity (+3 more)
 
 ### Community 90 - "system.py"
-Cohesion: 0.06
-Nodes (31): delete_channel(), delete_project(), delete_schedule(), audit_log(), create_user(), dashboard(), delete_user(), events() (+23 more)
+Cohesion: 0.11
+Nodes (17): audit_log(), dashboard(), events(), health(), list_users(), ModelConfigBody, patch_system_config(), PullBody (+9 more)
 
-### Community 91 - "_enrich_article"
-Cohesion: 0.25
-Nodes (5): article_id(), _enrich_article(), _enrich_video(), _strip_read_more_teaser(), test_article_id_only_for_google_news_article_links()
-
-### Community 92 - "fetch_html_or_archive"
-Cohesion: 0.17
-Nodes (5): archived_html(), _extract_article(), fetch_article(), fetch_html_or_archive(), test_blocked_article_falls_back_to_wayback_snapshot()
+### Community 91 - "json"
+Cohesion: 0.12
+Nodes (11): article_id(), batch_request(), parse_batch(), resolve(), url_in_id(), _enrich_article(), _enrich_video(), _strip_read_more_teaser() (+3 more)
 
 ### Community 93 - "BRIEFING — 2026-10-29T14:34:00Z"
 Cohesion: 0.18
 Nodes (10): Artifact Index, Attack Surface, BRIEFING — 2026-10-29T14:34:00Z, Current Parent, 🔒 Key Constraints, Key Decisions Made, Loaded Skills, Mission (+2 more)
 
-### Community 94 - "drafts_service.py"
-Cohesion: 0.24
-Nodes (6): approve(), clear(), NoChannels, _publication_fingerprint(), _publication_lock_key(), test_approving_exact_duplicate_text_cancels_second_publication()
+### Community 94 - "channel_secrets.py"
+Cohesion: 0.16
+Nodes (9): _aes_key(), decrypt_value(), encrypt_channel_config(), encrypt_plaintext_channel_secrets(), encrypt_value(), is_encrypted(), NoChannels, _publication_fingerprint() (+1 more)
 
-### Community 95 - "youtube.py"
-Cohesion: 0.11
-Nodes (21): _is_reddit(), parse_feed(), captions_to_text(), feed_url(), fetch(), _int(), parse_video_feed(), search_result_to_video() (+13 more)
+### Community 95 - "test_connectors.py"
+Cohesion: 0.04
+Nodes (54): item_mode(), prepare(), normalize_subreddit(), normalize_channel(), captions_to_text(), channel_id_from_page(), classify_input(), feed_url() (+46 more)
 
 ### Community 96 - "BRIEFING — 2026-10-29T14:33:30Z"
 Cohesion: 0.18
@@ -592,6 +591,10 @@ Nodes (10): Artifact Index, Attack Surface, BRIEFING — 2026-10-29T14:33:30Z, C
 ### Community 97 - "BRIEFING — 2026-10-29T14:29:00Z"
 Cohesion: 0.18
 Nodes (10): Artifact Index, BRIEFING — 2026-10-29T14:29:00Z, Current Parent, 🔒 Key Constraints, Key Decisions Made, Loaded Skills, Mission, 🔒 My Identity (+2 more)
+
+### Community 98 - "2. Конвейер обработки данных (Pipeline)"
+Cohesion: 0.35
+Nodes (11): 3. Caveats, 1.1. Package Management & Build Tooling, 1.2. Existing Test Catalog & Test Execution Status, 1.4. Story Weight ("Вес сюжета") Usage in Existing UI, 1. Observation, Backend API Contracts (Immutable), coverage(), freshness() (+3 more)
 
 ### Community 99 - "Panel Framework"
 Cohesion: 0.33
@@ -605,9 +608,9 @@ Nodes (10): Artifact Index, Attack Surface, BRIEFING — 2026-10-29T14:41:00Z, C
 Cohesion: 0.18
 Nodes (10): Artifact Index, Attack Surface, BRIEFING — 2026-10-29T14:33:30Z, Current Parent, 🔒 Key Constraints, Key Decisions Made, Mission, 🔒 My Identity (+2 more)
 
-### Community 102 - "admin.py"
-Cohesion: 0.24
-Nodes (5): list_users(), main(), reset_password(), close_pool(), main()
+### Community 102 - "get_settings"
+Cohesion: 0.17
+Nodes (14): list_users(), main(), reset_password(), get_settings(), close_pool(), migrate(), open_pool(), bootstrap_admin() (+6 more)
 
 ### Community 104 - "test_drop_default_images_clears_citation_pictures"
 Cohesion: 0.40
@@ -621,9 +624,9 @@ Nodes (9): Artifact Index, BRIEFING — 2026-10-29T14:01:00Z, 🔒 Key Constrain
 Cohesion: 0.50
 Nodes (3): Decision Council Configuration, Panel Composition, Structural Advisors
 
-### Community 107 - "http_get"
-Cohesion: 0.14
-Nodes (9): fetch(), listing_url(), fetch(), video_channel(), _youtube_channels(), lookup(), http_get(), test_reddit_listing_url() (+1 more)
+### Community 107 - "download_image"
+Cohesion: 0.18
+Nodes (7): download_image(), classify_exception(), send_vk(), _immediate_sleep(), test_classify_exception_distinguishes_safe_retry_from_unknown(), test_image_download_retries_temporary_transport_failure(), test_vk_publisher_posts_to_wall()
 
 ### Community 108 - "BRIEFING — 2026-10-29T14:22:30Z"
 Cohesion: 0.22
@@ -674,8 +677,8 @@ Cohesion: 0.29
 Nodes (6): Artifact Index, BRIEFING — 2026-10-29T14:19:30Z, Current Parent, 🔒 Key Constraints, Mission, 🔒 My Identity
 
 ### Community 120 - "BRIEFING — 2026-10-29T14:21:25Z"
-Cohesion: 0.29
-Nodes (6): Artifact Index, BRIEFING — 2026-10-29T14:21:25Z, Current Parent, 🔒 Key Constraints, Mission, 🔒 My Identity
+Cohesion: 0.25
+Nodes (7): Artifact Index, BRIEFING — 2026-10-29T14:21:25Z, Current Parent, 🔒 Key Constraints, Key Decisions Made, Mission, 🔒 My Identity
 
 ### Community 121 - "explorer_survey_1/DISPATCH.md"
 Cohesion: 0.29
@@ -741,81 +744,93 @@ Nodes (4): 4.1 Specification for `web/src/components/Layout.tsx`, 4.2 Specificat
 Cohesion: 0.50
 Nodes (3): 2026-10-29T14:40:31Z, Identity & Paths, Objective
 
-### Community 137 - "create_channel"
-Cohesion: 0.23
-Nodes (9): ChannelBody, create_channel(), list_channels(), _merge_secrets(), _public_channel(), update_channel(), _validate_channel(), test_channel_secrets_roundtrip_and_public_redaction() (+1 more)
+### Community 137 - "channels.py"
+Cohesion: 0.13
+Nodes (15): _channel_for_use(), ChannelBody, create_channel(), list_channels(), _merge_secrets(), _public_channel(), test_channel(), update_channel() (+7 more)
+
+### Community 143 - "Резюме системы Pulse (System Architecture & Operational Guide)"
+Cohesion: 0.20
+Nodes (9): 1. Технологический стек, 3. Ключевые узлы и структура репозитория, 4. Разработка и регламенты команд, GEMINI.md — Pulse & Gemini Argon Context, graphify, Безопасность и архитектурные инварианты, Запуск и проверка, Резюме системы Pulse (System Architecture & Operational Guide) (+1 more)
 
 ### Community 144 - "Бэкапы и восстановление"
 Cohesion: 0.67
 Nodes (3): Бэкапы и восстановление, Восстановление базы, Резервное копирование
 
-### Community 174 - "StubProvider"
-Cohesion: 0.21
-Nodes (5): set_provider(), StubProvider, clean(), pool(), test_connector_failure_is_recorded_on_source()
+### Community 174 - "conftest.py"
+Cohesion: 0.47
+Nodes (3): set_provider(), clean(), pool()
 
-### Community 175 - "automatic_review"
-Cohesion: 0.20
-Nodes (9): automatic_review(), gate_auto_publish(), test_single_source_curated_post_is_not_blocked_by_citation_coverage(), test_title_mismatch_holds_post_even_in_full_auto(), test_automatic_review_blocks_short_unenriched_and_wrong_language_posts(), test_automatic_review_does_not_block_multisource_post_for_one_short_rss_source(), test_automatic_review_flags_low_interest(), test_gate_auto_publish_modes() (+1 more)
+### Community 175 - "Handoff Report: Milestone 1 — Design System & Shared Foundations"
+Cohesion: 0.25
+Nodes (7): 1.2 Verification Tool Outputs, 1. Observation, 2. Logic Chain, 3. Caveats, 4. Conclusion, 5. Verification Method, Handoff Report: Milestone 1 — Design System & Shared Foundations
 
 ### Community 176 - "BRIEFING — 2026-10-29T14:30:00Z"
-Cohesion: 0.20
-Nodes (9): Artifact Index, BRIEFING — 2026-10-29T14:30:00Z, Change Tracker, Current Parent, 🔒 Key Constraints, Loaded Skills, Mission, 🔒 My Identity (+1 more)
+Cohesion: 0.18
+Nodes (10): Artifact Index, BRIEFING — 2026-10-29T14:30:00Z, Change Tracker, Current Parent, 🔒 Key Constraints, Key Decisions Made, Loaded Skills, Mission (+2 more)
 
-### Community 177 - "generate_aspects"
-Cohesion: 0.28
-Nodes (5): generate_aspects(), _marker_key(), needs_aspects(), _Chat, test_model_writes_aspects_once_per_topic()
+### Community 177 - "test_interest_publish.py"
+Cohesion: 0.10
+Nodes (21): content_plan(), generate_aspects(), generate_aspects_job(), _marker_key(), needs_aspects(), parse_aspects(), schedule(), get_project() (+13 more)
 
 ### Community 178 - "BRIEFING — 2026-10-29T14:11:10Z"
-Cohesion: 0.25
-Nodes (7): Artifact Index, BRIEFING — 2026-10-29T14:11:10Z, Current Parent, 🔒 Key Constraints, Key Decisions Made, Mission, 🔒 My Identity
+Cohesion: 0.22
+Nodes (8): Artifact Index, BRIEFING — 2026-10-29T14:11:10Z, Current Parent, Investigation State, 🔒 Key Constraints, Key Decisions Made, Mission, 🔒 My Identity
 
-### Community 179 - "post_media"
-Cohesion: 0.25
-Nodes (5): _analyzed(), _host(), _links_away(), _page_media(), post_media()
-
-### Community 180 - "find_origin"
+### Community 179 - "cancel_job"
 Cohesion: 0.29
-Nodes (4): brand(), find_origin(), _site(), _stems()
+Nodes (4): cancel_generation_job(), clear_project_clusters(), cancel_job(), clear_clusters()
+
+### Community 180 - "4.2 Step-by-Step Technical Implementation Plan"
+Cohesion: 0.33
+Nodes (6): 4.1 Reasoning from Observations to Architecture, 4.2 Step-by-Step Technical Implementation Plan, 4. Logic Chain & Step-by-Step Technical Plan, Phase 1: Styling Foundation & Theme Configuration (`web/src/index.css` & `main.tsx`), Phase 3: Removal of Story Weight & Streamlining Workflow (R2), Phase 4: Decomposition & Code Refactoring (R3)
 
 ### Community 181 - "Handoff Report: Build, Test, API Contracts & E2E Testing Strategy for `web/`"
 Cohesion: 0.29
 Nodes (6): 3. Caveats, 4. Conclusion, 5.1. Commands to Independently Verify Current Build & Tests, 5.3. Invalidation Conditions, 5. Verification Method, Handoff Report: Build, Test, API Contracts & E2E Testing Strategy for `web/`
 
-### Community 182 - "video_id"
+### Community 182 - "generate_job"
 Cohesion: 0.33
-Nodes (5): video_id(), _search_all(), one(), test_video_id_rejects_non_videos(), test_video_id_understands_all_link_forms()
+Nodes (3): generate_job(), _record_fire(), _slot()
 
-### Community 183 - "image_dimensions"
+### Community 183 - "1.2 Inventory of Clutter & Secondary Elements across the 5 Target Pages"
 Cohesion: 0.40
-Nodes (4): image_dimensions(), _jpeg_dimensions(), _webp_dimensions(), test_image_dimensions_reads_headers_of_known_formats()
+Nodes (5): 1.2 Inventory of Clutter & Secondary Elements across the 5 Target Pages, Page 1: `Drafts.tsx` (Lines 1–530), Page 2: `Trends.tsx` (Lines 1–415), Page 3: `Overview.tsx` (Lines 1–205), Page 5: `Publications.tsx` (Lines 1–88)
 
 ### Community 184 - "rating_prompt"
 Cohesion: 0.33
 Nodes (4): criteria_for(), rating_prompt(), test_rating_prompt_penalizes_self_promotion_and_ads_outside_video(), test_project_criteria_replace_default_interest_criteria()
 
+### Community 185 - "_reply_form"
+Cohesion: 0.50
+Nodes (3): _reply_form(), _reply_parameters(), test_reply_parameters_for_json_and_multipart()
+
 ### Community 186 - "nws"
 Cohesion: 0.40
 Nodes (5): nws(), test_curated_score_has_its_own_components_and_marks_missing_engagement_neutral(), _features(), test_nws_components_and_breakdown(), test_weights_override_and_ignore_unknown()
 
+### Community 188 - "db.py"
+Cohesion: 0.09
+Nodes (3): _configure(), _NumpyBinaryLoader, _NumpyLoader
+
 ## Knowledge Gaps
 - **8 isolated node(s):** `electron-builder`, `@fontsource-variable/literata`, `@types/node`, `@types/react`, `@types/react-dom` (+3 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1123 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **51 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1153 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **69 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Топовые узлы графа вызовов (Graphify God Nodes)` connect `Топовые узлы графа вызовов (Graphify God Nodes)` to `test_api.py`, `test_units.py`, `test_integration.py`, `db.py`, `Spinner`, `fetchall`, `fetchone`, `execute`?**
-  _High betweenness centrality (0.142) - this node is a cross-community bridge._
+- **Why does `Топовые узлы графа вызовов (Graphify God Nodes)` connect `fetchall` to `get_settings`, `channels.py`, `test_integration.py`, `utcnow`, `Spinner`, `Резюме системы Pulse (System Architecture & Operational Guide)`, `execute`?**
+  _High betweenness centrality (0.122) - this node is a cross-community bridge._
 - **What connects `electron-builder`, `@fontsource-variable/literata`, `@types/node` to the rest of the system?**
   _8 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `render.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.0821256038647343 - nodes in this community are weakly interconnected._
-- **Why does `get_settings()` connect `db.py` to `eval_clustering.py`, `test_api.py`, `test_units.py`, `test_api.py`, `admin.py`, `ingest.py`, `test_integration.py`, `searx.py`, `images.py`, `minhash.py`, `fetchall`, `Топовые узлы графа вызовов (Graphify God Nodes)`, `fetchone`, `get_settings`, `publisher.py`, `system.py`, `Broker`, `youtube.py`?**
-  _High betweenness centrality (0.073) - this node is a cross-community bridge._
+  _Cohesion score 0.11336032388663968 - nodes in this community are weakly interconnected._
+- **Why does `1.3. API Client & Contracts Analysis` connect `Sources` to `eval_clustering.py`, `test_units.py`, `2. Конвейер обработки данных (Pipeline)`, `fixtures.tsx`, `content.py`, `Drafts.tsx`?**
+  _High betweenness centrality (0.061) - this node is a cross-community bridge._
 - **Should `test_api.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.05333333333333334 - nodes in this community are weakly interconnected._
-- **Why does `1.3. API Client & Contracts Analysis` connect `Sources` to `eval_clustering.py`, `fixtures.tsx`, `automatic_review`, `scoring.py`, `content.py`, `Drafts.tsx`?**
-  _High betweenness centrality (0.059) - this node is a cross-community bridge._
+  _Cohesion score 0.09982174688057041 - nodes in this community are weakly interconnected._
+- **Why does `get_settings()` connect `get_settings` to `test_api.py`, `ingest.py`, `channels.py`, `test_integration.py`, `app/__init__.py`, `minhash.py`, `get_settings`, `send_telegram`, `publisher.py`, `eval_clustering.py`, `searx.py`, `fetchall`, `db.py`, `Broker`, `test_api.py`, `images.py`, `system.py`, `channel_secrets.py`, `test_connectors.py`?**
+  _High betweenness centrality (0.053) - this node is a cross-community bridge._
 - **Should `test_units.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.05411764705882353 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.05803921568627451 - nodes in this community are weakly interconnected._
