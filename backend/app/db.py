@@ -26,6 +26,7 @@ class AdvisoryLock(IntEnum):
     JOB_QUEUE = 747002
     PROJECT_PIPELINE = 1
     PROJECT_TOPIC_BACKFILL = 3
+    PROJECT_EDITORIAL_TRAIN = 4
 
 
 async def migrate() -> None:

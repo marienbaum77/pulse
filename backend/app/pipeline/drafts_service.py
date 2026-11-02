@@ -3,6 +3,7 @@ import hashlib
 import re
 
 from .. import db, events
+from . import editorial_model
 
 
 class NoChannels(Exception):
@@ -107,5 +108,6 @@ async def reject(draft_id: int, *, reopen_clusters: bool = False) -> bool:
                 "WHERE id = ANY(%s) AND state IN ('drafted','excluded')",
                 (reopen_clusters, row["cluster_ids"]),
             )
+    await editorial_model.register_editorial_action(row["project_id"])
     await events.notify("draft", draft_id=draft_id, status="rejected", project_id=row["project_id"])
     return True

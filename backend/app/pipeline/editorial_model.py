@@ -10,7 +10,7 @@ from datetime import datetime
 import numpy as np
 from psycopg.types.json import Jsonb
 
-from .. import db
+from .. import db, jobs
 from ..providers import get_provider
 from ..textutil import utcnow
 from . import ingest, scoring, stats
@@ -805,3 +805,30 @@ async def train_project(project_id: int) -> dict:
                      (Jsonb(state), project_id))
     _BANK_CACHE.pop((project_id, state["version"]), None)
     return state
+
+
+async def schedule_training(project_id: int) -> None:
+    await jobs.enqueue("train_editorial_model", {"project_id": project_id}, dedupe_key=f"editorial:{project_id}")
+
+
+async def register_editorial_action(project_id: int) -> None:
+    row = await db.fetchone(
+        "UPDATE projects SET editorial_actions_since_train = editorial_actions_since_train + 1 WHERE id = %s "
+        "RETURNING editorial_actions_since_train", (project_id,),
+    )
+    if row and row["editorial_actions_since_train"] >= 5:
+        await schedule_training(project_id)
+
+
+@jobs.handler("train_editorial_model")
+async def train_editorial_model(payload: dict) -> None:
+    project_id = int(payload["project_id"])
+    async with db.advisory_lock(db.AdvisoryLock.PROJECT_EDITORIAL_TRAIN, project_id) as got:
+        if not got:
+            raise jobs.Retry(5)
+        try:
+            await sync_examples(project_id)
+            state = await train_project(project_id)
+            log.info("editorial model for project %s trained: %s", project_id, state["stage"])
+        except ValueError as e:
+            log.info("editorial model for project %s not trained: %s", project_id, e)

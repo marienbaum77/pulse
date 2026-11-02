@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import httpx
 
 from . import db, events, markup
-from .pipeline import media
+from .pipeline import editorial_model, media
 from .channel_secrets import decrypt_channel_config
 from .config import get_settings
 from .images import download_image
@@ -560,6 +560,7 @@ async def apply_result(pub: dict, res: SendResult, draft: dict, auto_retry_unkno
             (res.external_id, pub["id"]),
         )
         await _mark_published(draft)
+        await editorial_model.register_editorial_action(draft["project_id"])
     elif res.kind == "retry" or (res.kind == "unknown" and auto_retry_unknown):
         if pub["attempts"] >= MAX_ATTEMPTS:
             status = "failed"

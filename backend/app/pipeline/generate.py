@@ -789,8 +789,8 @@ async def run_generation(payload: dict) -> list[int]:
         candidates = await select_clusters(project, pool_size, payload.get("content_kinds"))
         cooldown = bool(project["source_cooldown_hours"])
         floor = project.get("slot_min_interest")
-        if getattr(provider, "supports_chat", False) and candidates:
-            from . import interest as interest_mod
+        from . import interest as interest_mod
+        if interest_mod.enabled(provider) and candidates:
             # С порогом оцениваем весь пул: отсечка может убрать первых, и следующие должны иметь оценку.
             limit = len(candidates) if cooldown or floor is not None else top_n
             candidates = await interest_mod.rank_by_interest(project, provider, candidates, limit)

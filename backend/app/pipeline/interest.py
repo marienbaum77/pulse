@@ -1,15 +1,25 @@
-"""Оценка интересности сюжета языковой моделью: одна короткая оценка 0-10 с обоснованием, кешируется в clusters."""
+"""Оценка интересности сюжета языковой или локальной редакционной моделью, с кешем в clusters."""
 import json
 import logging
 import re
 
 from .. import db
+from ..config import get_settings
 from ..providers import LLMUnavailable
 from ..textutil import split_sentences
 
 log = logging.getLogger("pulse.interest")
 MAX_RATINGS_PER_RUN = 12  # новых оценок за проход: каждая — вызов модели, остальные ждут следующего прохода
 RERATE_GROWTH = 1.5
+
+
+def local_enabled() -> bool:
+    return get_settings().interest_mode == "local"
+
+
+def enabled(provider) -> bool:
+    return local_enabled() or bool(getattr(provider, "supports_chat", False))
+
 
 SYSTEM = """Ты — главный редактор новостного канала. Тематика: {topic}. Оцени, насколько сюжет интересен и полезен этой аудитории, по шкале от 0 до 10.
 {criteria}
@@ -74,10 +84,11 @@ def rating_prompt(project: dict, row: dict, items: list[dict]) -> tuple[str, str
 
 async def rate_cluster(project: dict, provider, cluster_id: int) -> float | None:
     """Возвращает оценку 0-10 или None, если модель недоступна; кеш обновляется, только если сюжет вырос."""
-    row = await db.fetchone("SELECT title, item_count, interest, interest_items, mode FROM clusters WHERE id = %s", (cluster_id,))
+    row = await db.fetchone("SELECT title, item_count, interest, interest_items, interest_model, mode FROM clusters WHERE id = %s", (cluster_id,))
     if not row:
         return None
-    if row["interest"] is not None and row["item_count"] < (row["interest_items"] or 0) * RERATE_GROWTH:
+    if ((row["interest_model"] or "llm") == "llm" and row["interest"] is not None
+            and row["item_count"] < (row["interest_items"] or 0) * RERATE_GROWTH):
         return float(row["interest"])
     if not getattr(provider, "supports_chat", False):
         return None
@@ -103,21 +114,57 @@ async def rate_cluster(project: dict, provider, cluster_id: int) -> float | None
         return None
     score, reason = parsed
     await db.execute(
-        "UPDATE clusters SET interest = %s, interest_reason = %s, interest_items = item_count WHERE id = %s",
+        "UPDATE clusters SET interest = %s, interest_reason = %s, interest_items = item_count, interest_model = 'llm' WHERE id = %s",
         (score, reason, cluster_id),
     )
     return score
 
 
+async def _rank_local(project: dict, candidates: list[dict], limit: int) -> list[dict]:
+    from . import editorial_model
+
+    ids = [c["id"] for c in candidates]
+    rows = await db.fetchall(
+        "SELECT id, interest, interest_items, item_count, interest_model FROM clusters WHERE id = ANY(%s)", (ids,)
+    ) if ids else []
+    cached = {r["id"]: r for r in rows}
+    state = project.get("editorial_model_state") or {}
+    model = f"local:{state['version']}" if state.get("version") else "local:cold"
+    needs = []
+    rated: dict[int, float] = {}
+    for c in candidates:
+        row = cached.get(c["id"])
+        if not row:
+            continue
+        stale = row["interest_model"] != model
+        grown = row["item_count"] >= (row["interest_items"] or 0) * RERATE_GROWTH
+        if row["interest"] is None or stale or grown:
+            needs.append(c["id"])
+        else:
+            rated[c["id"]] = float(row["interest"])
+    scores = await editorial_model.evaluate_interest_local(project, needs)
+    for cid, (score, reason) in scores.items():
+        await db.execute(
+            "UPDATE clusters SET interest = %s, interest_reason = %s, interest_items = item_count, interest_model = %s WHERE id = %s",
+            (score, reason, model, cid),
+        )
+        rated[cid] = score
+    for c in candidates:
+        c["interest"] = rated.get(c["id"])
+    order = {c["id"]: i for i, c in enumerate(candidates)}
+    return sorted(candidates, key=lambda c: (-rated.get(c["id"], 5.0), order[c["id"]]))[:limit]
+
+
 async def rank_by_interest(project: dict, provider, candidates: list[dict], limit: int) -> list[dict]:
-    """Из списка кандидатов (уже отсортированных по теме и весу) берёт `limit` самых интересных.
-    Оцениваются только несколько первых без кешированной оценки: каждая оценка — вызов модели.
-    В c["interest"] записывается актуальная оценка; None — оценки нет (модель недоступна или исчерпан лимит прохода)."""
+    """Ранжирует кандидатов актуальной оценкой выбранной модели; сюжеты без оценки идут с нейтральными 5."""
+    if local_enabled():
+        return await _rank_local(project, candidates, limit)
     rated: dict[int, float] = {}
     fresh = 0
     for c in candidates:
-        cached = await db.fetchone("SELECT interest, interest_items, item_count FROM clusters WHERE id = %s", (c["id"],))
-        needs = cached["interest"] is None or cached["item_count"] >= (cached["interest_items"] or 0) * RERATE_GROWTH
+        cached = await db.fetchone("SELECT interest, interest_items, item_count, interest_model FROM clusters WHERE id = %s", (c["id"],))
+        needs = ((cached["interest_model"] or "llm") != "llm" or cached["interest"] is None
+                 or cached["item_count"] >= (cached["interest_items"] or 0) * RERATE_GROWTH)
         if needs and fresh >= MAX_RATINGS_PER_RUN:
             if cached["interest"] is not None:
                 rated[c["id"]] = float(cached["interest"])
@@ -129,5 +176,4 @@ async def rank_by_interest(project: dict, provider, candidates: list[dict], limi
     for c in candidates:
         c["interest"] = rated.get(c["id"])
     order = {c["id"]: i for i, c in enumerate(candidates)}
-    # без оценки (модель недоступна, лимит) кандидат идёт с нейтральными 5: порядок по теме и весу сохраняется
     return sorted(candidates, key=lambda c: (-rated.get(c["id"], 5.0), order[c["id"]]))[:limit]

@@ -658,8 +658,8 @@ async def process_project(project_id: int) -> dict:
         stats["duplicates"] = stats.get("duplicates", 0) + stats["lexical_duplicates"]
         stats["embedded"] = embedded
         stats["scored"] = await refresh_clusters(project)
-        # Оценка интересности сюжетов языковой моделью (после скоринга); самые интересные публикуются сразу.
-        if getattr(provider, "supports_chat", False):
+        # Оценка интересности сюжетов (после скоринга); самые интересные публикуются сразу.
+        if interest_mod.enabled(provider):
             candidates = await select_clusters(project, RATING_POOL, for_rating=True)
             if candidates:
                 await interest_mod.rank_by_interest(project, provider, candidates, limit=len(candidates))

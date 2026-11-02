@@ -6,7 +6,8 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, field_validator
 
 from .. import db, jobs
-from ..pipeline import aspects
+from ..pipeline import aspects, editorial_model
+from ..pipeline.connectors import telegram
 from ..pipeline.generate import FORMAT_PROMPTS, FORMATTING_RULE
 from ..pipeline.scoring import COMPONENTS, DEFAULT_WEIGHTS
 from ..security import audit, editor, viewer
@@ -17,7 +18,7 @@ PROJECT_COLS = (
     "id, name, topic, topic_aspects, language, tone, max_length, prompt_template, prompt_version, generation_mode, publish_mode, window_hours, "
     "sim_threshold, topic_threshold, weights, context_items, context_sentences, min_items, auto_retry_unknown, show_sources, active, "
     "content_profile, curated_window_hours, source_cooldown_hours, instant_interest, instant_daily_limit, single_min_interest, "
-    "slot_min_interest, topic_aspects_auto, interest_criteria, reply_related_days, article_max_length, created_at"
+    "slot_min_interest, topic_aspects_auto, interest_criteria, reference_tg_channels, reply_related_days, article_max_length, created_at"
 )
 
 
@@ -57,8 +58,14 @@ class ProjectBody(BaseModel):
     slot_min_interest: float | None = Field(None, ge=0, le=10)
     # Чем канал считает материал сильным и слабым; пусто — стандартные критерии модели.
     interest_criteria: str = Field("", max_length=2000)
+    reference_tg_channels: list[str] = Field(default_factory=list, max_length=5)
     # Новый пост — ответ на связанный пост за последние N дней; 0 — не отвечать.
     reply_related_days: int = Field(14, ge=0, le=60)
+
+    @field_validator("reference_tg_channels")
+    @classmethod
+    def _reference_channels(cls, v):
+        return list(dict.fromkeys(telegram.normalize_channel(item) for item in v))
 
     @field_validator("weights")
     @classmethod
@@ -116,6 +123,8 @@ async def create_project(body: ProjectBody, user=Depends(editor)):
     )
     if not body.topic_aspects and body.topic.strip():
         await aspects.schedule(row["id"])
+    if body.reference_tg_channels:
+        await editorial_model.schedule_training(row["id"])
     await audit(user, "create", "project", row["id"], {"name": body.name})
     return row
 
@@ -123,7 +132,8 @@ async def create_project(body: ProjectBody, user=Depends(editor)):
 @router.put("/projects/{pid}")
 async def update_project(pid: int, body: ProjectBody, user=Depends(editor)):
     old = await db.fetchone(
-        "SELECT topic, topic_aspects, topic_aspects_auto, prompt_template, prompt_version, interest_criteria FROM projects WHERE id = %s", (pid,)
+        "SELECT topic, topic_aspects, topic_aspects_auto, prompt_template, prompt_version, interest_criteria, reference_tg_channels "
+        "FROM projects WHERE id = %s", (pid,)
     )
     if not old:
         raise HTTPException(404, "Проект не найден")
@@ -156,8 +166,35 @@ async def update_project(pid: int, body: ProjectBody, user=Depends(editor)):
             "UPDATE clusters SET interest = NULL, interest_reason = NULL, interest_items = NULL WHERE project_id = %s AND state = 'open'", (pid,)
         )
         await jobs.enqueue("process_project", {"project_id": pid}, dedupe_key=f"process:{pid}")
+    if body.reference_tg_channels != list(old["reference_tg_channels"] or []):
+        await editorial_model.schedule_training(pid)
     await audit(user, "update", "project", pid)
     return row
+
+
+async def _editorial_state(pid: int) -> dict:
+    row = await db.fetchone("SELECT editorial_model_state FROM projects WHERE id = %s", (pid,))
+    if not row:
+        raise HTTPException(404, "Проект не найден")
+    state = row["editorial_model_state"] or {}
+    metrics = state.get("metrics") or {}
+    return {"stage": state.get("stage", "untrained"), "pr_auc": metrics.get("pr_auc"),
+            "precision_at_8": metrics.get("precision_at_8"), "n_pos": metrics.get("n_pos", 0),
+            "n_neg": metrics.get("n_neg", 0), "n_gold": metrics.get("n_gold", 0),
+            "trained_at": state.get("trained_at"), "top_features": state.get("top_features") or []}
+
+
+@router.get("/projects/{pid}/editorial-model")
+async def get_editorial_model(pid: int, user=Depends(viewer)):
+    return await _editorial_state(pid)
+
+
+@router.post("/projects/{pid}/editorial-model/retrain", status_code=202)
+async def retrain_editorial_model(pid: int, user=Depends(editor)):
+    state = await _editorial_state(pid)
+    await editorial_model.schedule_training(pid)
+    await audit(user, "retrain", "project", pid)
+    return state
 
 
 @router.delete("/projects/{pid}", status_code=204)

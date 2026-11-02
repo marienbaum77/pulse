@@ -55,6 +55,7 @@ export const mockProject: Project = {
   single_min_interest: 7.0,
   slot_min_interest: 6.0,
   interest_criteria: "Strict technical relevance",
+  reference_tg_channels: [],
   reply_related_days: 7,
   topic_aspects_auto: true,
 };

@@ -15,6 +15,7 @@
 | `PULSE_DOMAIN` | Только для production overlay: домен Caddy, например `pulse.example.com`. |
 | `COOKIE_SECURE` | `true` для HTTPS (обязательно для production), `false` для локального HTTP. |
 | `LLM_PROVIDER`, `LLM_CHAT_ENABLED` | Провайдер чат-модели и включение генерации. `stub` отключает вызовы чат-модели. |
+| `INTEREST_MODE` | `llm` (по умолчанию) — оценка интересности чат-моделью; `local` — локальная модель по эталонным каналам и решениям редактора. |
 | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT` | URL, API-ключ, имя модели и таймаут запросов к OpenAI-совместимому API. |
 | `EMBED_MODEL`, `EMBED_BASE_URL`, `EMBED_API_KEY` | Модель и endpoint эмбеддингов. По умолчанию `bge-m3` загружается в Ollama из стека. |
 | `OLLAMA_CONTEXT_LENGTH`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_PARALLEL` | Ограничения памяти и параллелизма Ollama; значения по умолчанию подходят для небольшого сервера. |

@@ -13,9 +13,14 @@ const BLANK: ProjectInput = {
   weights: { coverage: 0.15, authority: 0.075, freshness: 0.1, velocity: 0.075, topic_fit: 0.6 },
   context_items: 6, context_sentences: 3, min_items: 2, auto_retry_unknown: false, show_sources: true, active: true,
   content_profile: "news", curated_window_hours: 336, source_cooldown_hours: 0,
-  instant_interest: null, instant_daily_limit: 3, single_min_interest: null, slot_min_interest: null, interest_criteria: "", reply_related_days: 14,
+  instant_interest: null, instant_daily_limit: 3, single_min_interest: null, slot_min_interest: null, interest_criteria: "", reference_tg_channels: [], reply_related_days: 14,
 };
 const toInput = (p: Project): ProjectInput => { const { id: _id, prompt_version: _v, topic_aspects_auto: _a, ...rest } = p; return rest; };
+
+type EditorialState = {
+  stage: string; pr_auc: number | null; precision_at_8: number | null; n_pos: number; n_neg: number; n_gold: number;
+  trained_at: string | null; top_features: { name: string; weight: number }[];
+};
 
 export default function ProjectSettings() {
   const { project, loading, setProjectId } = useProject();
@@ -52,6 +57,16 @@ export default function ProjectSettings() {
   const del = useMutation({
     mutationFn: () => api(`/projects/${project!.id}`, { method: "DELETE" }),
     onSuccess: () => { toast("Проект удалён"); qc.invalidateQueries(); nav("/"); },
+    onError: (e: Error) => toast(e.message, "bad"),
+  });
+  const editorial = useQuery({
+    queryKey: ["editorial-model", project?.id],
+    queryFn: () => api<EditorialState>(`/projects/${project!.id}/editorial-model`),
+    enabled: !creating && !!project,
+  });
+  const retrain = useMutation({
+    mutationFn: () => api<EditorialState>(`/projects/${project!.id}/editorial-model/retrain`, { method: "POST" }),
+    onSuccess: () => { toast("Переобучение поставлено в очередь"); qc.invalidateQueries({ queryKey: ["editorial-model", project?.id] }); },
     onError: (e: Error) => toast(e.message, "bad"),
   });
 
@@ -146,7 +161,7 @@ export default function ProjectSettings() {
           {f.min_items > 1 && (
             <div>
               <Toggle checked={f.single_min_interest != null} onChange={(v) => set("single_min_interest", v ? 7 : null)} label="Пропускать одиночные сюжеты с высокой интересностью" />
-              <p className="hint mt-1.5 max-w-[70ch]">Новостной сюжет, в котором меньше материалов, чем задано выше, всё равно идёт в публикацию, если языковая модель оценила его не ниже порога. Мелочь из одного источника по-прежнему отсекается. Нужна чат-модель.</p>
+              <p className="hint mt-1.5 max-w-[70ch]">Новостной сюжет, в котором меньше материалов, чем задано выше, всё равно идёт в публикацию, если модель оценила его не ниже порога. Мелочь из одного источника по-прежнему отсекается. В LLM-режиме нужна чат-модель, в локальном — редакционная.</p>
               {f.single_min_interest != null && (
                 <div className="mt-4">
                   <Field label="Порог интересности для одиночного сюжета, из 10">
@@ -162,6 +177,29 @@ export default function ProjectSettings() {
           <Field label={`Минимальная близость к теме: ${f.topic_threshold.toFixed(2)}`} hint="Близость сюжета — среднее по его материалам: насколько заголовки близки к аспектам темы. Это косинусное сходство, а не вероятность; сверяйте порог с карточкой сюжета. Поставьте 0, чтобы отключить фильтр.">
             <input type="range" min={0} max={0.8} step={0.01} className="w-full accent-[var(--brand)]" value={f.topic_threshold} onChange={(e) => set("topic_threshold", Number(e.target.value))} disabled={ro} />
           </Field>
+        </Section>
+
+        <Section title="Редакционная модель">
+          <Field label="Эталонные Telegram-каналы" hint="До пяти публичных каналов, по одному @name или ссылке на строку. Их посты задают вкус локальной модели отбора; сами по себе они ничего не публикуют в ваш канал. Сохраните изменения перед переобучением.">
+            <textarea className="field font-mono text-[13px]" rows={4} value={f.reference_tg_channels.join("\n")}
+              onChange={(e) => set("reference_tg_channels", e.target.value.split("\n").map((v) => v.trim()).filter(Boolean))} disabled={ro} placeholder={"@example\nhttps://t.me/another"} />
+          </Field>
+          {!creating && (
+            <div className="rule rounded-lg p-4 space-y-3">
+              <div className="text-sm">
+                Стадия: <b>{editorial.data?.stage === "AB" ? "вкус и признаки сюжета" : editorial.data?.stage === "A_only" ? "только вкус, оценка не выше 7" : "модель ещё не обучена"}</b>
+                {editorial.data?.trained_at && <span className="block hint mt-1">Обучена: {new Date(editorial.data.trained_at).toLocaleString("ru-RU")}</span>}
+              </div>
+              {editorial.data && editorial.data.stage !== "untrained" && (
+                <div className="grid sm:grid-cols-3 gap-3 text-sm">
+                  <span>PR-AUC: <b className="num">{editorial.data.pr_auc == null ? "н/д" : editorial.data.pr_auc.toFixed(3)}</b></span>
+                  <span>Precision при 8+: <b className="num">{editorial.data.precision_at_8 == null ? "н/д" : editorial.data.precision_at_8.toFixed(3)}</b></span>
+                  <span>Примеров: <b className="num">{editorial.data.n_pos + editorial.data.n_neg}</b> (решений редактора: {editorial.data.n_gold})</span>
+                </div>
+              )}
+              {!ro && <button type="button" className="btn btn-sm" disabled={retrain.isPending} onClick={() => retrain.mutate()}>{retrain.isPending ? "Ставим в очередь…" : "Переобучить"}</button>}
+            </div>
+          )}
         </Section>
 
         <Section title="Публикация">
@@ -199,7 +237,7 @@ export default function ProjectSettings() {
           </Field>
           <div>
             <Toggle checked={f.slot_min_interest != null} onChange={(v) => set("slot_min_interest", v ? 6 : null)} label="Не заполнять слот слабым сюжетом" />
-            <p className="hint mt-1.5 max-w-[70ch]">Слот расписания берёт сюжет, только если языковая модель оценила его не ниже порога. Если подходящих нет, слот остаётся пустым: пустой слот лучше слабого поста. Сюжеты без оценки (модель недоступна) тоже пропускаются. Выключено — слот берёт лучший из имеющихся. Нужна чат-модель.</p>
+            <p className="hint mt-1.5 max-w-[70ch]">Слот расписания берёт сюжет, только если модель оценила его не ниже порога. Если подходящих нет, слот остаётся пустым: пустой слот лучше слабого поста. Сюжеты без оценки (модель недоступна) тоже пропускаются. Выключено — слот берёт лучший из имеющихся. В LLM-режиме нужна чат-модель, в локальном — редакционная.</p>
             {f.slot_min_interest != null && (
               <div className="mt-4">
                 <Field label="Минимальная интересность для слота, из 10">
@@ -210,7 +248,7 @@ export default function ProjectSettings() {
           </div>
           <div>
             <Toggle checked={f.instant_interest != null} onChange={(v) => set("instant_interest", v ? 8 : null)} label="Публиковать самые интересные сюжеты сразу" />
-            <p className="hint mt-1.5 max-w-[70ch]">Сюжет, который языковая модель оценила не ниже порога, публикуется сразу после оценки, не дожидаясь слота расписания. Действует и при ручном утверждении: пост без замечаний автопроверок уходит сам, сомнительный остаётся редактору. Нужна чат-модель.</p>
+            <p className="hint mt-1.5 max-w-[70ch]">Сюжет, который модель оценила не ниже порога, публикуется сразу после оценки, не дожидаясь слота расписания. Действует и при ручном утверждении: пост без замечаний автопроверок уходит сам, сомнительный остаётся редактору. В LLM-режиме нужна чат-модель, в локальном — редакционная.</p>
             {f.instant_interest != null && (
               <div className="grid sm:grid-cols-2 gap-5 mt-4">
                 <Field label="Порог интересности, из 10">

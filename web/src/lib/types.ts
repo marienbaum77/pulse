@@ -11,6 +11,7 @@ export interface Project {
   content_profile: ContentProfile; curated_window_hours: number; source_cooldown_hours: number;
   instant_interest: number | null; instant_daily_limit: number; single_min_interest: number | null; slot_min_interest: number | null;
   interest_criteria: string;
+  reference_tg_channels: string[];
   reply_related_days: number;
   /** Аспекты темы составила модель; правка вручную это отключает. Только для чтения. */
   topic_aspects_auto: boolean;

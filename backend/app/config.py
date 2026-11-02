@@ -1,4 +1,6 @@
 from functools import lru_cache
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +22,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "qwen/qwen3.8-27b"
     llm_chat_enabled: bool = True
+    interest_mode: Literal["llm", "local"] = "llm"
     embed_model: str = "bge-m3"
     # Эмбеддинги можно брать с другого сервера, чем текст (например, локальный Ollama + облачный chat API).
     embed_base_url: str = "http://ollama:11434/v1"
