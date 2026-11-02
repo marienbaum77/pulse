@@ -1750,5 +1750,23 @@
     "seen": 1793555112.9246063,
     "ast_hash": "741a1b0a63c0ee55af2cb5bfafb816c2",
     "semantic_hash": ""
+  },
+  "backend/app/migrations/031_editorial_reference_model.sql": {
+    "mtime": 1793629348.186035,
+    "seen": 1793630139.779753,
+    "ast_hash": "9065f3d6989b86f9cea5a67201c90405",
+    "semantic_hash": ""
+  },
+  "backend/app/pipeline/editorial_model.py": {
+    "mtime": 1793630042.651533,
+    "seen": 1793630139.779773,
+    "ast_hash": "71308a65cf4223217fb240d8bd5329cc",
+    "semantic_hash": ""
+  },
+  "backend/tests/test_editorial_model.py": {
+    "mtime": 1793630001.5054612,
+    "seen": 1793630139.7798126,
+    "ast_hash": "bef0e69742222a8f4fcf35569655c397",
+    "semantic_hash": ""
   }
 }
