@@ -142,7 +142,7 @@ async def _rank_local(project: dict, candidates: list[dict], limit: int) -> list
             needs.append(c["id"])
         else:
             rated[c["id"]] = float(row["interest"])
-    scores = await editorial_model.evaluate_interest_local(project, needs)
+    scores = await editorial_model.evaluate_interest_local(project, needs) if needs else {}
     for cid, (score, reason) in scores.items():
         await db.execute(
             "UPDATE clusters SET interest = %s, interest_reason = %s, interest_items = item_count, interest_model = %s WHERE id = %s",

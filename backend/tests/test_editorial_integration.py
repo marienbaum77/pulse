@@ -25,7 +25,7 @@ def test_local_mode_does_not_require_chat(monkeypatch):
 async def _make_cluster(pid: int) -> int:
     row = await db.fetchone(
         "INSERT INTO clusters(project_id, title, first_seen, last_seen, source_count, item_count) "
-        "VALUES (%s, 'Новый рекорд: 50% роста', now(), now(), 2, 1) RETURNING id", (pid,),
+        "VALUES (%s, 'Новый рекорд: 50%% роста', now(), now(), 2, 1) RETURNING id", (pid,),
     )
     vector = np.zeros(256, dtype=np.float32)
     vector[0] = 1
