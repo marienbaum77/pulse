@@ -118,6 +118,31 @@ def test_state_serialization_stays_below_twenty_kb():
     assert em.serialized_state_size(state) <= em.MAX_STATE_BYTES
 
 
+def test_training_with_reference_only_in_stage_a_and_ablations():
+    rng = np.random.default_rng(8)
+    examples = []
+    vectors = []
+    features = {}
+    for i in range(90):
+        label = i % 2
+        reference = i >= 80
+        kind = "reference_channel" if reference else ("editor_approved" if label else "editor_rejected")
+        examples.append({"label": label, "source_kind": kind, "cluster_id": None if reference else i,
+                         "created_at": f"2026-01-01T00:{i:02d}:00"})
+        vectors.append(rng.normal(size=4) + (1 if label else -1) * np.asarray([2, 0, 0, 0]))
+        if not reference:
+            features[i] = {"anchor": 1.0, "coverage": 0.5}
+    state = em.train_model(examples, np.asarray(vectors), features)
+    assert state["stage"] == "AB"
+    anchor = em.train_model(examples, np.asarray(vectors), features, ablate="anchor")
+    knn = em.train_model(examples, np.asarray(vectors), features, ablate="knn")
+    taste = em.train_model(examples, np.asarray(vectors), features, ablate="taste_only")
+    assert anchor["feature_mean"][em.FEATURE_NAMES.index("anchor")] == 0
+    assert all(knn["feature_mean"][em.FEATURE_NAMES.index(name)] == 0
+               for name in ("sim_pos_top3", "sim_neg_top3", "contrast_margin"))
+    assert taste["stage"] == "A_only" and not taste["stage_b_weights"]
+
+
 @pytest.mark.usefixtures("clean")
 async def test_sync_examples_uses_rejected_drafts_not_ignored_items_and_deduplicates():
     pid = await make_project(channel=False)

@@ -1,0 +1,371 @@
+{
+  "parameters": {
+    "data": null,
+    "synthetic": true,
+    "test_frac": 0.2,
+    "seed": 42,
+    "ablate": [
+      "anchor",
+      "knn",
+      "taste_only"
+    ],
+    "bootstrap_rounds": 1000,
+    "latency_runs": 1000,
+    "split": "grouped temporal by cluster_id; thresholds fitted on train only",
+    "provider": null
+  },
+  "warning": "СИНТЕТИЧЕСКИЙ демо-прогон — не реальная оценка качества",
+  "n_rows": 240,
+  "n_train": 192,
+  "n_test": 48,
+  "proposed_train_coverage_at_8": 0.5,
+  "memory_measurement": "rss_peak_mb — пиковый прирост Python-аллокаций по tracemalloc, не RSS всего процесса",
+  "methods": {
+    "proposed": {
+      "pr_auc": 1.0,
+      "roc_auc": 1.0,
+      "precision_at_5": 1.0,
+      "precision_at_10": 1.0,
+      "precision_at_8": 1.0,
+      "fpr_at_8": 0.0,
+      "fpr_same_coverage": 0.0,
+      "coverage_at_8": 0.5,
+      "coverage_same": 0.5,
+      "ci95": {
+        "pr_auc": [
+          1.0,
+          1.0
+        ],
+        "roc_auc": [
+          1.0,
+          1.0
+        ],
+        "precision_at_5": [
+          1.0,
+          1.0
+        ],
+        "precision_at_10": [
+          1.0,
+          1.0
+        ],
+        "precision_at_8": [
+          1.0,
+          1.0
+        ],
+        "fpr_at_8": [
+          0.0,
+          0.0
+        ],
+        "fpr_same_coverage": [
+          0.0,
+          0.0
+        ],
+        "coverage_at_8": [
+          0.375,
+          0.625
+        ],
+        "coverage_same": [
+          0.375,
+          0.625
+        ]
+      },
+      "n_test": 48,
+      "same_coverage_threshold": 8.0,
+      "stage": "AB",
+      "latency_median_ms": 0.3118,
+      "latency_ci95": [
+        0.3018,
+        0.64891
+      ],
+      "rss_peak_mb": 0.072113037109375,
+      "tracemalloc_peak_mb": 0.072113037109375,
+      "bank_bytes": 24576,
+      "state_bytes": 1732
+    },
+    "anchor": {
+      "pr_auc": 1.0,
+      "roc_auc": 1.0,
+      "precision_at_5": 1.0,
+      "precision_at_10": 1.0,
+      "precision_at_8": 1.0,
+      "fpr_at_8": 0.0,
+      "fpr_same_coverage": 0.0,
+      "coverage_at_8": 0.5,
+      "coverage_same": 0.5,
+      "ci95": {
+        "pr_auc": [
+          1.0,
+          1.0
+        ],
+        "roc_auc": [
+          1.0,
+          1.0
+        ],
+        "precision_at_5": [
+          1.0,
+          1.0
+        ],
+        "precision_at_10": [
+          1.0,
+          1.0
+        ],
+        "precision_at_8": [
+          1.0,
+          1.0
+        ],
+        "fpr_at_8": [
+          0.0,
+          0.0
+        ],
+        "fpr_same_coverage": [
+          0.0,
+          0.0
+        ],
+        "coverage_at_8": [
+          0.375,
+          0.625
+        ],
+        "coverage_same": [
+          0.375,
+          0.625
+        ]
+      },
+      "n_test": 48,
+      "same_coverage_threshold": 8.0,
+      "stage": "AB"
+    },
+    "knn": {
+      "pr_auc": 1.0,
+      "roc_auc": 1.0,
+      "precision_at_5": 1.0,
+      "precision_at_10": 1.0,
+      "precision_at_8": 1.0,
+      "fpr_at_8": 0.0,
+      "fpr_same_coverage": 0.0,
+      "coverage_at_8": 0.5,
+      "coverage_same": 0.5,
+      "ci95": {
+        "pr_auc": [
+          1.0,
+          1.0
+        ],
+        "roc_auc": [
+          1.0,
+          1.0
+        ],
+        "precision_at_5": [
+          1.0,
+          1.0
+        ],
+        "precision_at_10": [
+          1.0,
+          1.0
+        ],
+        "precision_at_8": [
+          1.0,
+          1.0
+        ],
+        "fpr_at_8": [
+          0.0,
+          0.0
+        ],
+        "fpr_same_coverage": [
+          0.0,
+          0.0
+        ],
+        "coverage_at_8": [
+          0.3541666666666667,
+          0.6458333333333334
+        ],
+        "coverage_same": [
+          0.3541666666666667,
+          0.6458333333333334
+        ]
+      },
+      "n_test": 48,
+      "same_coverage_threshold": 8.0,
+      "stage": "AB"
+    },
+    "taste_only": {
+      "pr_auc": 1.0,
+      "roc_auc": 1.0,
+      "precision_at_5": 1.0,
+      "precision_at_10": 1.0,
+      "precision_at_8": 0.0,
+      "fpr_at_8": 0.0,
+      "fpr_same_coverage": 0.0,
+      "coverage_at_8": 0.0,
+      "coverage_same": 0.0,
+      "ci95": {
+        "pr_auc": [
+          1.0,
+          1.0
+        ],
+        "roc_auc": [
+          1.0,
+          1.0
+        ],
+        "precision_at_5": [
+          1.0,
+          1.0
+        ],
+        "precision_at_10": [
+          1.0,
+          1.0
+        ],
+        "precision_at_8": [
+          0.0,
+          0.0
+        ],
+        "fpr_at_8": [
+          0.0,
+          0.0
+        ],
+        "fpr_same_coverage": [
+          0.0,
+          0.0
+        ],
+        "coverage_at_8": [
+          0.0,
+          0.0
+        ],
+        "coverage_same": [
+          0.0,
+          0.0
+        ]
+      },
+      "n_test": 48,
+      "same_coverage_threshold": 8.0,
+      "stage": "A_only"
+    },
+    "nws": {
+      "pr_auc": 0.9652563677106011,
+      "roc_auc": 0.9618055555555556,
+      "precision_at_5": 1.0,
+      "precision_at_10": 1.0,
+      "precision_at_8": 1.0,
+      "fpr_at_8": 0.0,
+      "fpr_same_coverage": 0.125,
+      "coverage_at_8": 0.041666666666666664,
+      "coverage_same": 0.5208333333333334,
+      "ci95": {
+        "pr_auc": [
+          0.9096636282815969,
+          0.9979531618239811
+        ],
+        "roc_auc": [
+          0.9050845418812686,
+          0.9981490723936277
+        ],
+        "precision_at_5": [
+          1.0,
+          1.0
+        ],
+        "precision_at_10": [
+          1.0,
+          1.0
+        ],
+        "precision_at_8": [
+          0.0,
+          1.0
+        ],
+        "fpr_at_8": [
+          0.0,
+          0.0
+        ],
+        "fpr_same_coverage": [
+          0.0,
+          0.2692307692307692
+        ],
+        "coverage_at_8": [
+          0.0,
+          0.10416666666666667
+        ],
+        "coverage_same": [
+          0.375,
+          0.6666666666666666
+        ]
+      },
+      "n_test": 48,
+      "same_coverage_threshold": 5.713
+    },
+    "topic": {
+      "pr_auc": 0.8945716302167642,
+      "roc_auc": 0.8611111111111112,
+      "precision_at_5": 1.0,
+      "precision_at_10": 1.0,
+      "precision_at_8": 0.0,
+      "fpr_at_8": 0.0,
+      "fpr_same_coverage": 0.08333333333333333,
+      "coverage_at_8": 0.0,
+      "coverage_same": 0.3958333333333333,
+      "ci95": {
+        "pr_auc": [
+          0.8054901089316072,
+          0.9751167842857884
+        ],
+        "roc_auc": [
+          0.7355753968253969,
+          0.9616517857142857
+        ],
+        "precision_at_5": [
+          1.0,
+          1.0
+        ],
+        "precision_at_10": [
+          1.0,
+          1.0
+        ],
+        "precision_at_8": [
+          0.0,
+          0.0
+        ],
+        "fpr_at_8": [
+          0.0,
+          0.0
+        ],
+        "fpr_same_coverage": [
+          0.0,
+          0.20020833333333315
+        ],
+        "coverage_at_8": [
+          0.0,
+          0.0
+        ],
+        "coverage_same": [
+          0.2708333333333333,
+          0.5416666666666666
+        ]
+      },
+      "n_test": 48,
+      "same_coverage_threshold": 0.8181810975074768
+    },
+    "llm": {
+      "status": "н/д",
+      "reason": "Нет реальных LLM-оценок; используйте --llm-scores или --run-llm"
+    }
+  },
+  "illustrative_cases": [
+    {
+      "name": "Gemini 4 Carbon",
+      "score": 6.00520716480728
+    },
+    {
+      "name": "Qwen 4.8",
+      "score": 6.618428407288619
+    },
+    {
+      "name": "my-list",
+      "score": 0.0018771292269035961
+    },
+    {
+      "name": "ai-bro",
+      "score": 0.012000014574774485
+    },
+    {
+      "name": "OpenClaw",
+      "score": 9.08323925858021
+    }
+  ],
+  "case_note": "Именованные кейсы только иллюстрируют ось решения; они исключены из train, test и агрегированных метрик."
+}

@@ -341,11 +341,12 @@ def score_features(state: dict, bank: dict, vec, feats: dict) -> tuple[float, di
     w_taste = np.asarray(state.get("w_taste") or [], dtype=np.float32)
     if unit is None or not len(w_taste) or unit.shape != w_taste.shape:
         return fallback_score(feats)
+    ablation = state.get("ablation")
     matrix = np.asarray(bank.get("vectors", np.empty((0, len(unit)))), dtype=np.float32)
     labels = np.asarray(bank.get("labels") or [], dtype=int)
     kinds = np.asarray(bank.get("source_kinds") or [], dtype=object)
     valid = matrix.ndim == 2 and len(matrix) == len(labels) and matrix.shape[1] == len(unit)
-    if valid and len(matrix):
+    if valid and len(matrix) and ablation != "knn":
         pos_sim, pos_idx = top3_similarity(matrix, unit, labels == 1)
         neg_wanted = np.asarray([kind in NEGATIVE_KINDS for kind in kinds])
         neg_sim, neg_idx = top3_similarity(matrix, unit, neg_wanted)
@@ -354,6 +355,8 @@ def score_features(state: dict, bank: dict, vec, feats: dict) -> tuple[float, di
         pos_idx = neg_idx = None
     taste_raw = float(unit @ w_taste + float(state.get("b", 0.0)))
     values = dict(feats)
+    if ablation == "anchor":
+        values["anchor"] = 0.0
     values.update({"taste": taste_raw, "sim_pos_top3": pos_sim, "sim_neg_top3": neg_sim,
                    "contrast_margin": pos_sim - neg_sim})
     if state.get("stage") == "AB" and state.get("stage_b_weights"):
@@ -397,7 +400,9 @@ def serialized_state_size(state: dict) -> int:
 
 def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], criteria_vector=None,
                 *, dup_sim: float = DEFAULT_DUP_SIM, match_sim: float = DEFAULT_MATCH_SIM,
-                neg_margin: float = DEFAULT_NEG_MARGIN, pi: float = 0.3) -> dict:
+                neg_margin: float = DEFAULT_NEG_MARGIN, pi: float = 0.3, ablate: str | None = None) -> dict:
+    if ablate not in {None, "anchor", "knn", "taste_only"}:
+        raise ValueError(f"Неизвестный вариант ablation: {ablate}")
     x = _normalize_rows(vectors)
     y = np.asarray([int(e["label"]) for e in examples], dtype=np.int8)
     weights = np.asarray([float(e.get("sample_weight", 1.0)) for e in examples])
@@ -408,9 +413,14 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
     rows = sorted(feature_rows)
     matrix = []
     for idx in rows:
-        pos = loo_top3(x, idx, labels == 1, cluster_ids)
-        neg = loo_top3(x, idx, np.asarray([kind in NEGATIVE_KINDS for kind in kinds]), cluster_ids)
+        if ablate == "knn":
+            pos = neg = 0.0
+        else:
+            pos = loo_top3(x, idx, labels == 1, cluster_ids)
+            neg = loo_top3(x, idx, np.asarray([kind in NEGATIVE_KINDS for kind in kinds]), cluster_ids)
         values = dict(feature_rows[idx])
+        if ablate == "anchor":
+            values["anchor"] = 0.0
         values.update({"taste": float(taste["oof"][idx]), "sim_pos_top3": pos, "sim_neg_top3": neg,
                        "contrast_margin": pos - neg})
         matrix.append([float(values.get(name, 0.0)) for name in FEATURE_NAMES])
@@ -435,8 +445,8 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
     scales = np.ones(len(FEATURE_NAMES))
     coefficients = np.zeros(len(FEATURE_NAMES))
     intercept = 0.0
-    raw_all = taste["oof"] + 2 * np.asarray([row[3] for row in matrix]) if matrix else np.asarray([])
-    if matrix and n_pos >= 30 and n_neg >= 30:
+    raw_all = taste["oof"][rows] + 2 * np.asarray([row[3] for row in matrix]) if matrix else np.asarray([])
+    if matrix and n_pos >= 30 and n_neg >= 30 and ablate != "taste_only":
         stage = "AB"
         full = np.asarray(matrix, dtype=np.float64)
         fit = full[fit_rows]
@@ -477,7 +487,7 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
     top = sorted(({"name": name, "weight": round(float(coefficients[i] * scales[i]), 5)}
                   for i, name in enumerate(FEATURE_NAMES)), key=lambda r: -abs(r["weight"]))[:6]
     state = {
-        "version": "", "trained_at": "", "dim": int(x.shape[1]), "stage": stage,
+        "version": "", "trained_at": "", "dim": int(x.shape[1]), "stage": stage, "ablation": ablate,
         "w_taste": taste["w"].tolist(), "b": float(taste["b"]), "alpha": float(taste["alpha"]), "pi": pi,
         "stage_b_weights": coefficients.tolist() if stage == "AB" else [],
         "stage_b_intercept": intercept, "feature_mean": means.tolist(), "feature_scale": scales.tolist(),
