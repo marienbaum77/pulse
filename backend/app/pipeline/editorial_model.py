@@ -423,14 +423,20 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
     y = np.asarray([int(e["label"]) for e in examples], dtype=np.int8)
     weights = np.asarray([float(e.get("sample_weight", 1.0)) for e in examples])
     kinds = [e["source_kind"] for e in examples]
-    rows = sorted(feature_rows)
-    gold_all = np.asarray([kind in {"editor_approved", "editor_rejected"} for kind in kinds])
+    rows = sorted(set(feature_rows) | {idx for idx, kind in enumerate(kinds) if kind == "reference_channel"})
+    gold_all = np.asarray([kind in {"reference_channel", "editor_approved", "editor_rejected"} for kind in kinds])
+    human_gold_all = np.asarray([kind in {"editor_approved", "editor_rejected"} for kind in kinds])
     gold_rows = [n for n, idx in enumerate(rows) if gold_all[idx]]
+
+    def observed_at(idx: int) -> str:
+        example = examples[idx]
+        return str((example.get("meta") or {}).get("published_at") or example.get("created_at") or "")
+
     groups: dict[object, list[int]] = {}
     for n in gold_rows:
         key = examples[rows[n]].get("cluster_id") or f"row:{rows[n]}"
         groups.setdefault(key, []).append(n)
-    ordered_groups = sorted(groups.values(), key=lambda ns: max(examples[rows[n]].get("created_at") or "" for n in ns))
+    ordered_groups = sorted(groups.values(), key=lambda ns: max(observed_at(rows[n]) for n in ns))
     val_rows: list[int] = []
     test_rows: list[int] = []
     if len(gold_rows) >= 12 and len(ordered_groups) >= 3:
@@ -459,7 +465,7 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
     fit_cluster_ids = [examples[idx].get("cluster_id") for idx in fit_example_ids]
     fit_positions = {idx: pos for pos, idx in enumerate(fit_example_ids)}
     taste = fit_taste(fit_x, fit_y, fit_weights, pi=pi)
-    fit_rows = [n for n, idx in enumerate(rows) if idx in fit_positions]
+    fit_rows = [n for n, idx in enumerate(rows) if idx in fit_positions and idx in feature_rows]
     matrix = []
     for idx in rows:
         if ablate == "knn":
@@ -472,7 +478,7 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
             pos, _ = top3_similarity(fit_x, x[idx], fit_y == 1)
             neg, _ = top3_similarity(fit_x, x[idx], np.asarray([kind in NEGATIVE_KINDS for kind in fit_kinds]))
         taste_raw = float(taste["oof"][fit_positions[idx]]) if idx in fit_positions else float(x[idx] @ taste["w"] + taste["b"])
-        values = dict(feature_rows[idx])
+        values = dict(feature_rows.get(idx) or {})
         if ablate == "anchor":
             values["anchor"] = 0.0
         values.update({"taste": taste_raw, "sim_pos_top3": pos, "sim_neg_top3": neg, "contrast_margin": pos - neg})
@@ -528,6 +534,7 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
     metrics = {"pr_auc": pr_auc, "roc_auc": auc, "roc_auc_ci": auc_ci,
                "positive_rate": positive_rate, "precision_at_8": precision, "precision_at_8_ci": precision_ci,
                "n_pos": int((y == 1).sum()), "n_neg": int((y == 0).sum()), "n_gold": int(gold_all.sum()),
+               "n_human_gold": int(human_gold_all.sum()), "n_fit_pos": n_pos, "n_fit_neg": n_neg,
                "n_val": len(val_rows), "n_test": len(test_rows), "n_compared": 0,
                "paired_roc_auc": None, "paired_roc_auc_ci": None, "llm_roc_auc": None, "llm_roc_auc_ci": None}
     compared = [(n, pos) for pos, n in enumerate(test_rows) if llm_scores and llm_scores.get(rows[n]) is not None]
@@ -537,11 +544,12 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
         paired_y = y[indices]
         paired_p = test_p[positions]
         llm = np.asarray([float(llm_scores[idx]) for idx in indices])
+        enough_classes = min(int((paired_y == 1).sum()), int((paired_y == 0).sum())) >= MIN_CLASS_EXAMPLES
         metrics.update({"n_compared": len(compared),
-                        "paired_roc_auc": roc_auc(paired_y, paired_p) if len(np.unique(paired_y)) == 2 else None,
-                        "paired_roc_auc_ci": roc_auc_ci(paired_y, paired_p),
-                        "llm_roc_auc": roc_auc(paired_y, llm) if len(np.unique(paired_y)) == 2 else None,
-                        "llm_roc_auc_ci": roc_auc_ci(paired_y, llm)})
+                        "paired_roc_auc": roc_auc(paired_y, paired_p) if enough_classes else None,
+                        "paired_roc_auc_ci": roc_auc_ci(paired_y, paired_p) if enough_classes else None,
+                        "llm_roc_auc": roc_auc(paired_y, llm) if enough_classes else None,
+                        "llm_roc_auc_ci": roc_auc_ci(paired_y, llm) if enough_classes else None})
     top = sorted(({"name": name, "weight": round(float(coefficients[i] * scales[i]), 5)}
                   for i, name in enumerate(FEATURE_NAMES)), key=lambda r: -abs(r["weight"]))[:6]
     state = {
@@ -578,7 +586,7 @@ async def _cluster_vectors(cluster_ids: list[int]) -> dict[int, dict]:
     for row in clusters:
         vectors = [_unit(v) for v in grouped[row["id"]]]
         vectors = [v for v in vectors if v is not None]
-        vec = _unit(np.mean(vectors, axis=0)) if vectors else None
+        vec = _unit(np.mean(vectors, axis=0)) if vectors else _unit(row.get("centroid"))
         out[row["id"]] = {**row, "vector": vec}
     return out
 

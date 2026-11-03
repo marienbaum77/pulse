@@ -20,7 +20,8 @@ const toInput = (p: Project): ProjectInput => { const { id: _id, prompt_version:
 type EditorialState = {
   stage: string; pr_auc: number | null; roc_auc: number | null; positive_rate: number | null;
   paired_roc_auc: number | null; llm_roc_auc: number | null; precision_at_8: number | null;
-  n_pos: number; n_neg: number; n_gold: number; n_test: number; n_compared: number;
+  n_pos: number; n_neg: number; n_gold: number; n_human_gold: number; n_fit_pos: number; n_fit_neg: number;
+  n_test: number; n_compared: number;
   trained_at: string | null; top_features: { name: string; weight: number }[];
 };
 
@@ -199,7 +200,8 @@ export default function ProjectSettings() {
                   <span>Доля позитивов (база): <b className="num">{editorial.data.positive_rate == null ? "н/д" : editorial.data.positive_rate.toFixed(3)}</b></span>
                   {editorial.data.n_compared > 0 && <span>ROC-AUC на {editorial.data.n_compared} общих строках: <b className="num">{editorial.data.paired_roc_auc == null ? "н/д" : editorial.data.paired_roc_auc.toFixed(3)}</b> локальная / <b className="num">{editorial.data.llm_roc_auc == null ? "н/д" : editorial.data.llm_roc_auc.toFixed(3)}</b> LLM</span>}
                   {editorial.data.stage === "AB" && <span>Precision при 8+ (тест): <b className="num">{editorial.data.precision_at_8 == null ? "н/д" : editorial.data.precision_at_8.toFixed(3)}</b></span>}
-                  <span>Примеров: <b className="num">{editorial.data.n_pos + editorial.data.n_neg}</b> (решений человека: {editorial.data.n_gold})</span>
+                  {editorial.data.stage === "A_only" && <span>Для этапа B в обучении: <b className="num">{editorial.data.n_fit_pos} позитивов / {editorial.data.n_fit_neg} негативов</b>; нужно минимум по 30, слабый поток не считается.</span>}
+                  <span>Примеров: <b className="num">{editorial.data.n_pos + editorial.data.n_neg}</b> (золотых: {editorial.data.n_gold}, из них решений человека: {editorial.data.n_human_gold})</span>
                 </div>
               )}
               {!ro && <button type="button" className="btn btn-sm" disabled={retrain.isPending} onClick={() => retrain.mutate()}>{retrain.isPending ? "Ставим в очередь…" : "Переобучить"}</button>}

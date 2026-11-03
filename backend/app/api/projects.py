@@ -184,7 +184,9 @@ async def _editorial_state(pid: int) -> dict:
             "llm_roc_auc": metrics.get("llm_roc_auc"), "llm_roc_auc_ci": metrics.get("llm_roc_auc_ci"),
             "precision_at_8": metrics.get("precision_at_8"), "n_pos": metrics.get("n_pos", 0),
             "n_neg": metrics.get("n_neg", 0), "n_gold": metrics.get("n_gold", 0),
-            "n_test": metrics.get("n_test", 0), "n_compared": metrics.get("n_compared", 0),
+            "n_human_gold": metrics.get("n_human_gold", 0), "n_fit_pos": metrics.get("n_fit_pos", 0),
+            "n_fit_neg": metrics.get("n_fit_neg", 0), "n_test": metrics.get("n_test", 0),
+            "n_compared": metrics.get("n_compared", 0),
             "trained_at": state.get("trained_at"), "top_features": state.get("top_features") or []}
 
 

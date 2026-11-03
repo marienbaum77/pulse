@@ -123,16 +123,17 @@ def test_training_with_reference_only_in_stage_a_and_ablations():
     examples = []
     vectors = []
     features = {}
-    for i in range(120):
-        label = i % 2
-        reference = i >= 100
+    for i in range(160):
+        reference = i < 20
+        label = 1 if reference else i % 2
         kind = "reference_channel" if reference else ("editor_approved" if label else "editor_rejected")
         examples.append({"label": label, "source_kind": kind, "cluster_id": None if reference else i,
                          "created_at": f"2026-01-01T{i // 60:02d}:{i % 60:02d}:00"})
         vectors.append(rng.normal(size=4) + (1 if label else -1) * np.asarray([2, 0, 0, 0]))
         if not reference:
             features[i] = {"anchor": 1.0, "coverage": 0.5}
-    llm_scores = {i: 9.0 if row["label"] else 1.0 for i, row in enumerate(examples)}
+    llm_scores = {i: 9.0 if row["label"] else 1.0 for i, row in enumerate(examples)
+                  if row["source_kind"] != "reference_channel"}
     state = em.train_model(examples, np.asarray(vectors), features, llm_scores=llm_scores)
     assert state["stage"] == "AB"
     assert state["metrics"]["n_val"] > 0 and state["metrics"]["n_test"] > 0
@@ -162,6 +163,28 @@ def test_single_class_temporal_test_has_no_auc_or_precision_at_8():
     assert state["metrics"]["positive_rate"] == 1.0
     assert state["metrics"]["roc_auc"] is None and state["metrics"]["roc_auc_ci"] is None
     assert state["metrics"]["precision_at_8"] is None and state["t8"] is None
+
+
+def test_reference_posts_are_gold_and_use_publication_time():
+    rng = np.random.default_rng(11)
+    examples = []
+    features = {}
+    for i in range(30):
+        reference = i % 2 == 0
+        observed = f"2026-01-{i + 1:02d}T00:00:00+00:00"
+        examples.append({"label": int(reference), "source_kind": "reference_channel" if reference else "editor_rejected",
+                         "cluster_id": None if reference else i,
+                         "created_at": "2026-11-03T00:00:00+00:00" if reference else observed,
+                         "meta": {"published_at": observed} if reference else {}})
+        if not reference:
+            features[i] = {"coverage": 0.5}
+    vectors = np.asarray([rng.normal(size=4) + (1 if row["label"] else -1) * np.asarray([2, 0, 0, 0])
+                          for row in examples])
+    state = em.train_model(examples, vectors, features)
+    assert state["metrics"]["n_gold"] == 30 and state["metrics"]["n_human_gold"] == 15
+    assert state["metrics"]["n_test"] == 6
+    assert state["metrics"]["positive_rate"] == 0.5
+    assert state["metrics"]["roc_auc"] is not None
 
 
 def test_training_with_single_class_is_untrained_and_scores_via_fallback():
@@ -254,3 +277,16 @@ async def test_sync_examples_keeps_only_human_non_instant_gold_and_removes_stale
     assert {(r["hook_text"], r["source_kind"]) for r in rows} == {
         ("Человек одобрил", "editor_approved"), ("Человек отклонил", "editor_rejected"),
     }
+
+
+@pytest.mark.usefixtures("clean")
+async def test_cluster_vectors_fall_back_to_centroid_when_items_are_gone():
+    pid = await make_project(channel=False)
+    vector = np.zeros(256, dtype=np.float32)
+    vector[0] = 2
+    cluster = await db.fetchone(
+        "INSERT INTO clusters(project_id, title, first_seen, last_seen, centroid) VALUES (%s,'Старый сюжет',now(),now(),%s) RETURNING id",
+        (pid, vector),
+    )
+    data = await em._cluster_vectors([cluster["id"]])
+    assert np.allclose(data[cluster["id"]]["vector"], np.asarray([1] + [0] * 255, dtype=np.float32))

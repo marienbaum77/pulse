@@ -60,9 +60,9 @@
     "semantic_hash": ""
   },
   "backend/app/api/projects.py": {
-    "mtime": 1793708700.8772664,
-    "seen": 1793708926.7275555,
-    "ast_hash": "64c204728058eb3c40c4676140ba4ddf",
+    "mtime": 1793713164.8695729,
+    "seen": 1793713266.235151,
+    "ast_hash": "1b97070c585dc6563b784aab37226181",
     "semantic_hash": ""
   },
   "backend/app/api/schedules.py": {
@@ -576,9 +576,9 @@
     "semantic_hash": ""
   },
   "web/src/pages/ProjectSettings.tsx": {
-    "mtime": 1793708736.2777505,
-    "seen": 1793708926.7277708,
-    "ast_hash": "d4bd7565953a4cc2c939edb2c380fed4",
+    "mtime": 1793713187.1711586,
+    "seen": 1793713266.2353425,
+    "ast_hash": "40c943fcae28b6c4a7469241b4781349",
     "semantic_hash": ""
   },
   "web/src/pages/Publications.tsx": {
@@ -1758,15 +1758,15 @@
     "semantic_hash": ""
   },
   "backend/app/pipeline/editorial_model.py": {
-    "mtime": 1793708520.0709646,
-    "seen": 1793708926.727633,
-    "ast_hash": "d09037fcf1cd2e8e7d878b74a2a9220a",
+    "mtime": 1793713139.6401818,
+    "seen": 1793713266.2352242,
+    "ast_hash": "61df90a8403e7b088e3d4996fa3fba09",
     "semantic_hash": ""
   },
   "backend/tests/test_editorial_model.py": {
-    "mtime": 1793708658.933046,
-    "seen": 1793708926.72769,
-    "ast_hash": "455dc05c2e83798bc0fa3858c1cff579",
+    "mtime": 1793713015.1886883,
+    "seen": 1793713266.2352657,
+    "ast_hash": "9a35e78095f48111d9e49c29bc920bda",
     "semantic_hash": ""
   },
   "backend/tests/test_editorial_integration.py": {
