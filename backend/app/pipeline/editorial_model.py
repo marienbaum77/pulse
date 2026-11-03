@@ -323,6 +323,20 @@ def roc_auc(y, scores) -> float:
     return (float(ranks[y == 1].sum()) - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
 
 
+def roc_auc_ci(y, scores, rounds: int = 1000) -> list[float] | None:
+    y = np.asarray(y, dtype=int)
+    scores = np.asarray(scores, dtype=float)
+    if len(np.unique(y)) < 2:
+        return None
+    rng = np.random.default_rng(17)
+    values = []
+    for _ in range(rounds):
+        indices = rng.integers(0, len(y), len(y))
+        if len(np.unique(y[indices])) == 2:
+            values.append(roc_auc(y[indices], scores[indices]))
+    return [float(v) for v in np.percentile(values, [2.5, 97.5])] if values else None
+
+
 def fallback_score(feats: dict) -> tuple[float, dict[str, float]]:
     anchor, promo = anchor_features(str(feats.get("title") or ""))
     values = {
@@ -401,56 +415,81 @@ def serialized_state_size(state: dict) -> int:
 
 def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], criteria_vector=None,
                 *, dup_sim: float = DEFAULT_DUP_SIM, match_sim: float = DEFAULT_MATCH_SIM,
-                neg_margin: float = DEFAULT_NEG_MARGIN, pi: float = 0.3, ablate: str | None = None) -> dict:
+                neg_margin: float = DEFAULT_NEG_MARGIN, pi: float = 0.3, ablate: str | None = None,
+                llm_scores: dict[int, float] | None = None) -> dict:
     if ablate not in {None, "anchor", "knn", "taste_only"}:
         raise ValueError(f"Неизвестный вариант ablation: {ablate}")
     x = _normalize_rows(vectors)
     y = np.asarray([int(e["label"]) for e in examples], dtype=np.int8)
     weights = np.asarray([float(e.get("sample_weight", 1.0)) for e in examples])
-    taste = fit_taste(x, y, weights, pi=pi)
-    labels = y
     kinds = [e["source_kind"] for e in examples]
-    cluster_ids = [e.get("cluster_id") for e in examples]
     rows = sorted(feature_rows)
+    gold_all = np.asarray([kind in {"editor_approved", "editor_rejected"} for kind in kinds])
+    gold_rows = [n for n, idx in enumerate(rows) if gold_all[idx]]
+    groups: dict[object, list[int]] = {}
+    for n in gold_rows:
+        key = examples[rows[n]].get("cluster_id") or f"row:{rows[n]}"
+        groups.setdefault(key, []).append(n)
+    ordered_groups = sorted(groups.values(), key=lambda ns: max(examples[rows[n]].get("created_at") or "" for n in ns))
+    val_rows: list[int] = []
+    test_rows: list[int] = []
+    if len(gold_rows) >= 12 and len(ordered_groups) >= 3:
+        target = max(3, int(math.ceil(0.2 * len(gold_rows))))
+        test_groups = []
+        for group in reversed(ordered_groups):
+            if test_groups and len(test_rows) >= target:
+                break
+            test_groups.append(group)
+            test_rows.extend(group)
+        val_groups = []
+        for group in reversed(ordered_groups[:-len(test_groups)]):
+            if val_groups and len(val_rows) >= target:
+                break
+            val_groups.append(group)
+            val_rows.extend(group)
+        if len(gold_rows) - len(test_rows) - len(val_rows) < 5:
+            val_rows, test_rows = [], []
+    heldout_examples = {rows[n] for n in val_rows + test_rows}
+    heldout_clusters = {examples[idx].get("cluster_id") for idx in heldout_examples if examples[idx].get("cluster_id") is not None}
+    fit_example_ids = [idx for idx, example in enumerate(examples)
+                       if idx not in heldout_examples and example.get("cluster_id") not in heldout_clusters]
+    fit_examples = np.asarray(fit_example_ids, dtype=int)
+    fit_x, fit_y, fit_weights = x[fit_examples], y[fit_examples], weights[fit_examples]
+    fit_kinds = np.asarray([kinds[idx] for idx in fit_example_ids])
+    fit_cluster_ids = [examples[idx].get("cluster_id") for idx in fit_example_ids]
+    fit_positions = {idx: pos for pos, idx in enumerate(fit_example_ids)}
+    taste = fit_taste(fit_x, fit_y, fit_weights, pi=pi)
+    fit_rows = [n for n, idx in enumerate(rows) if idx in fit_positions]
     matrix = []
     for idx in rows:
         if ablate == "knn":
             pos = neg = 0.0
+        elif idx in fit_positions:
+            local = fit_positions[idx]
+            pos = loo_top3(fit_x, local, fit_y == 1, fit_cluster_ids)
+            neg = loo_top3(fit_x, local, np.asarray([kind in NEGATIVE_KINDS for kind in fit_kinds]), fit_cluster_ids)
         else:
-            pos = loo_top3(x, idx, labels == 1, cluster_ids)
-            neg = loo_top3(x, idx, np.asarray([kind in NEGATIVE_KINDS for kind in kinds]), cluster_ids)
+            pos, _ = top3_similarity(fit_x, x[idx], fit_y == 1)
+            neg, _ = top3_similarity(fit_x, x[idx], np.asarray([kind in NEGATIVE_KINDS for kind in fit_kinds]))
+        taste_raw = float(taste["oof"][fit_positions[idx]]) if idx in fit_positions else float(x[idx] @ taste["w"] + taste["b"])
         values = dict(feature_rows[idx])
         if ablate == "anchor":
             values["anchor"] = 0.0
-        values.update({"taste": float(taste["oof"][idx]), "sim_pos_top3": pos, "sim_neg_top3": neg,
-                       "contrast_margin": pos - neg})
+        values.update({"taste": taste_raw, "sim_pos_top3": pos, "sim_neg_top3": neg, "contrast_margin": pos - neg})
         matrix.append([float(values.get(name, 0.0)) for name in FEATURE_NAMES])
-    gold_all = np.asarray([e["source_kind"] in {"editor_approved", "editor_rejected"} for e in examples])
-    gold_rows = [n for n, idx in enumerate(rows) if gold_all[idx]]
-    val_rows: list[int] = []
-    if gold_rows:
-        ordered_gold = sorted(gold_rows, key=lambda n: examples[rows[n]].get("created_at") or "")
-        count = min(len(ordered_gold), max(20, int(math.ceil(0.2 * len(ordered_gold)))))
-        chosen = set(ordered_gold[-count:])
-        cutoff = min(examples[rows[n]].get("created_at") or "" for n in chosen)
-        val_rows = [n for n in range(len(rows)) if n in chosen or (examples[rows[n]].get("created_at") or "") >= cutoff]
-    elif rows:
-        val_rows = list(range(max(0, len(rows) - max(1, int(math.ceil(0.2 * len(rows))))), len(rows)))
-    validation = set(val_rows)
-    fit_rows = [n for n in range(len(rows)) if n not in validation]
     labeled = [n for n in fit_rows if examples[rows[n]]["source_kind"] != "stream_unlabeled"]
     n_pos = sum(int(y[rows[n]]) for n in labeled)
     n_neg = len(labeled) - n_pos
-    trained = min(int((y == 1).sum()), int((y == 0).sum())) >= MIN_CLASS_EXAMPLES
+    trained = min(int((fit_y == 1).sum()), int((fit_y == 0).sum())) >= MIN_CLASS_EXAMPLES
     stage = "A_only" if trained else "untrained"
     means = np.zeros(len(FEATURE_NAMES))
     scales = np.ones(len(FEATURE_NAMES))
     coefficients = np.zeros(len(FEATURE_NAMES))
     intercept = 0.0
-    raw_all = taste["oof"][rows] + 2 * np.asarray([row[3] for row in matrix]) if matrix else np.asarray([])
-    if matrix and n_pos >= 30 and n_neg >= 30 and ablate != "taste_only":
+    full = np.asarray(matrix, dtype=np.float64)
+    raw_all = full[:, 0] + 2 * full[:, 3] if matrix else np.asarray([])
+    if matrix and fit_rows and n_pos >= 30 and n_neg >= 30 and ablate != "taste_only":
         stage = "AB"
-        full = np.asarray(matrix, dtype=np.float64)
         fit = full[fit_rows]
         means, scales = fit.mean(axis=0), fit.std(axis=0)
         scales = np.maximum(scales, 1e-3)
@@ -459,20 +498,22 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
         beta = fit_logistic(design[fit_rows], y[fit_indices], weights[fit_indices], l2=8.0)
         intercept, coefficients = float(beta[0]), beta[1:]
         raw_all = intercept + design @ coefficients
+    platt_a, platt_b, t8 = 1.0, 0.0, None
+    median = float(np.median(_sigmoid(raw_all[fit_rows]))) if fit_rows else 0.5
     if val_rows:
         val_indices = np.asarray(rows)[val_rows]
-        val_y = y[val_indices]
         val_raw = np.asarray(raw_all)[val_rows]
-        val_weights = weights[val_indices]
-        platt_a, platt_b = fit_platt(val_raw, val_y, val_weights)
+        platt_a, platt_b = fit_platt(val_raw, y[val_indices], weights[val_indices])
         val_p = _sigmoid(platt_a * val_raw + platt_b)
-        val_gold = gold_all[val_indices]
-        t8 = choose_t8(val_p, val_y, val_gold)
-        median = float(np.median(_sigmoid(np.asarray(raw_all))))
-        gold_p = val_p[val_gold]
-        gold_y = val_y[val_gold]
-        selected = gold_p >= t8 if t8 is not None else np.zeros(len(gold_p), dtype=bool)
-        precision = float(gold_y[selected].mean()) if selected.any() else None
+        if stage == "AB":
+            t8 = choose_t8(val_p, y[val_indices], np.ones(len(val_rows), dtype=bool))
+    precision = precision_ci = pr_auc = auc = auc_ci = positive_rate = None
+    if test_rows:
+        test_indices = np.asarray(rows)[test_rows]
+        test_y = y[test_indices]
+        test_p = _sigmoid(platt_a * np.asarray(raw_all)[test_rows] + platt_b)
+        selected = test_p >= t8 if stage == "AB" and t8 is not None else np.zeros(len(test_p), dtype=bool)
+        precision = float(test_y[selected].mean()) if selected.any() else None
         hits = int(selected.sum())
         if hits:
             z = 1.96
@@ -480,12 +521,27 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
             centre = (precision + z * z / (2 * hits)) / denominator
             margin = z * math.sqrt(precision * (1 - precision) / hits + z * z / (4 * hits * hits)) / denominator
             precision_ci = [max(0.0, centre - margin), min(1.0, centre + margin)]
-        else:
-            precision_ci = None
-        pr_auc = average_precision(gold_y, gold_p) if len(gold_y) else 0.0
-        auc = roc_auc(gold_y, gold_p) if len(np.unique(gold_y)) == 2 else 0.0
-    else:
-        platt_a, platt_b, t8, median, precision, precision_ci, pr_auc, auc = 1.0, 0.0, None, 0.5, None, None, 0.0, 0.0
+        pr_auc = average_precision(test_y, test_p) if test_y.any() else None
+        auc = roc_auc(test_y, test_p) if len(np.unique(test_y)) == 2 else None
+        auc_ci = roc_auc_ci(test_y, test_p)
+        positive_rate = float(test_y.mean())
+    metrics = {"pr_auc": pr_auc, "roc_auc": auc, "roc_auc_ci": auc_ci,
+               "positive_rate": positive_rate, "precision_at_8": precision, "precision_at_8_ci": precision_ci,
+               "n_pos": int((y == 1).sum()), "n_neg": int((y == 0).sum()), "n_gold": int(gold_all.sum()),
+               "n_val": len(val_rows), "n_test": len(test_rows), "n_compared": 0,
+               "paired_roc_auc": None, "paired_roc_auc_ci": None, "llm_roc_auc": None, "llm_roc_auc_ci": None}
+    compared = [(n, pos) for pos, n in enumerate(test_rows) if llm_scores and llm_scores.get(rows[n]) is not None]
+    if compared:
+        positions = [pos for _, pos in compared]
+        indices = np.asarray(rows)[[n for n, _ in compared]]
+        paired_y = y[indices]
+        paired_p = test_p[positions]
+        llm = np.asarray([float(llm_scores[idx]) for idx in indices])
+        metrics.update({"n_compared": len(compared),
+                        "paired_roc_auc": roc_auc(paired_y, paired_p) if len(np.unique(paired_y)) == 2 else None,
+                        "paired_roc_auc_ci": roc_auc_ci(paired_y, paired_p),
+                        "llm_roc_auc": roc_auc(paired_y, llm) if len(np.unique(paired_y)) == 2 else None,
+                        "llm_roc_auc_ci": roc_auc_ci(paired_y, llm)})
     top = sorted(({"name": name, "weight": round(float(coefficients[i] * scales[i]), 5)}
                   for i, name in enumerate(FEATURE_NAMES)), key=lambda r: -abs(r["weight"]))[:6]
     state = {
@@ -496,9 +552,7 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
         "platt": [platt_a, platt_b], "t8": t8, "scale_median": median,
         "DUP_SIM": dup_sim, "MATCH_SIM": match_sim, "NEG_MARGIN": neg_margin,
         "criteria_vector": _unit(criteria_vector).tolist() if _unit(criteria_vector) is not None else [],
-        "metrics": {"pr_auc": float(pr_auc), "roc_auc": float(auc), "precision_at_8": precision,
-                    "precision_at_8_ci": precision_ci, "n_pos": int((y == 1).sum()), "n_neg": int((y == 0).sum()),
-                    "n_gold": int(gold_all.sum()), "n_val": len(val_rows)},
+        "metrics": metrics,
         "top_features": top,
     }
     return _compact_state(state)
@@ -508,7 +562,7 @@ async def _cluster_vectors(cluster_ids: list[int]) -> dict[int, dict]:
     if not cluster_ids:
         return {}
     clusters = await db.fetchall(
-        "SELECT id, project_id, title, centroid, source_count, item_count, last_seen FROM clusters WHERE id = ANY(%s)",
+        "SELECT id, project_id, title, centroid, source_count, item_count, last_seen, interest FROM clusters WHERE id = ANY(%s)",
         (list(set(cluster_ids)),),
     )
     items = await db.fetchall(
@@ -593,13 +647,24 @@ async def sync_examples(project_id: int) -> dict:
             reference_count += len(examples)
         except Exception as e:
             log.info("reference channel %s not synchronized: %s", channel, e)
+    await db.execute(
+        "DELETE FROM editorial_examples e WHERE e.project_id = %s "
+        "AND e.source_kind IN ('editor_approved', 'editor_rejected') AND NOT EXISTS ("
+        "SELECT 1 FROM drafts d WHERE d.id = NULLIF(e.meta->>'draft_id', '')::bigint "
+        "AND d.project_id = e.project_id AND NOT d.instant AND ("
+        "(e.source_kind = 'editor_rejected' AND d.status = 'rejected') OR "
+        "(e.source_kind = 'editor_approved' AND d.approved_by IS NOT NULL AND EXISTS ("
+        "SELECT 1 FROM publications p WHERE p.draft_id = d.id AND p.status = 'sent'))))",
+        (project_id,),
+    )
     rejected = await db.fetchall(
         "SELECT id, cluster_ids, created_at FROM drafts WHERE project_id = %s AND status = 'rejected' "
-        "AND cardinality(cluster_ids) > 0", (project_id,),
+        "AND NOT instant AND cardinality(cluster_ids) > 0", (project_id,),
     )
     approved = await db.fetchall(
         "SELECT DISTINCT d.id, d.cluster_ids, d.created_at FROM drafts d JOIN publications p ON p.draft_id = d.id "
-        "WHERE d.project_id = %s AND p.status = 'sent' AND cardinality(d.cluster_ids) > 0", (project_id,),
+        "WHERE d.project_id = %s AND p.status = 'sent' AND d.approved_by IS NOT NULL AND NOT d.instant "
+        "AND cardinality(d.cluster_ids) > 0", (project_id,),
     )
     relatives = {p["draft_id"]: p["relative"] for p in await stats.settled_posts(project_id)}
     decisions = [("editor_rejected", row, 3.0) for row in rejected]
@@ -807,9 +872,15 @@ async def train_project(project_id: int) -> dict:
     if criteria_unit is not None and len(criteria_unit) == dim:
         for idx in feature_rows:
             feature_rows[idx]["criteria_fit"] = max(0.0, float(criteria_unit @ _unit(vectors[idx])))
+    llm_scores = {}
+    for idx, example in enumerate(examples):
+        cid = example.get("cluster_id")
+        interest = candidate_data.get(cid, {}).get("interest")
+        if example["source_kind"] in {"editor_approved", "editor_rejected"} and interest is not None:
+            llm_scores[idx] = float(interest)
     state = train_model(examples, vectors, feature_rows, criteria_vector,
                         dup_sim=float(os.getenv("DUP_SIM", DEFAULT_DUP_SIM)), match_sim=match_sim,
-                        neg_margin=float(os.getenv("NEG_MARGIN", DEFAULT_NEG_MARGIN)))
+                        neg_margin=float(os.getenv("NEG_MARGIN", DEFAULT_NEG_MARGIN)), llm_scores=llm_scores)
     now = utcnow()
     state["trained_at"] = now.isoformat()
     state["version"] = now.strftime("%Y%m%d%H%M%S")

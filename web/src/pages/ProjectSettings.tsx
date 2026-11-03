@@ -18,7 +18,9 @@ const BLANK: ProjectInput = {
 const toInput = (p: Project): ProjectInput => { const { id: _id, prompt_version: _v, topic_aspects_auto: _a, ...rest } = p; return rest; };
 
 type EditorialState = {
-  stage: string; pr_auc: number | null; precision_at_8: number | null; n_pos: number; n_neg: number; n_gold: number;
+  stage: string; pr_auc: number | null; roc_auc: number | null; positive_rate: number | null;
+  paired_roc_auc: number | null; llm_roc_auc: number | null; precision_at_8: number | null;
+  n_pos: number; n_neg: number; n_gold: number; n_test: number; n_compared: number;
   trained_at: string | null; top_features: { name: string; weight: number }[];
 };
 
@@ -192,9 +194,12 @@ export default function ProjectSettings() {
               </div>
               {editorial.data && editorial.data.stage !== "untrained" && (
                 <div className="grid sm:grid-cols-3 gap-3 text-sm">
-                  <span>PR-AUC: <b className="num">{editorial.data.pr_auc == null ? "н/д" : editorial.data.pr_auc.toFixed(3)}</b></span>
-                  <span>Precision при 8+: <b className="num">{editorial.data.precision_at_8 == null ? "н/д" : editorial.data.precision_at_8.toFixed(3)}</b></span>
-                  <span>Примеров: <b className="num">{editorial.data.n_pos + editorial.data.n_neg}</b> (решений редактора: {editorial.data.n_gold})</span>
+                  <span>PR-AUC (тест, n={editorial.data.n_test}): <b className="num">{editorial.data.pr_auc == null ? "н/д" : editorial.data.pr_auc.toFixed(3)}</b></span>
+                  <span>ROC-AUC (тест): <b className="num">{editorial.data.roc_auc == null ? "н/д" : editorial.data.roc_auc.toFixed(3)}</b></span>
+                  <span>Доля позитивов (база): <b className="num">{editorial.data.positive_rate == null ? "н/д" : editorial.data.positive_rate.toFixed(3)}</b></span>
+                  {editorial.data.n_compared > 0 && <span>ROC-AUC на {editorial.data.n_compared} общих строках: <b className="num">{editorial.data.paired_roc_auc == null ? "н/д" : editorial.data.paired_roc_auc.toFixed(3)}</b> локальная / <b className="num">{editorial.data.llm_roc_auc == null ? "н/д" : editorial.data.llm_roc_auc.toFixed(3)}</b> LLM</span>}
+                  {editorial.data.stage === "AB" && <span>Precision при 8+ (тест): <b className="num">{editorial.data.precision_at_8 == null ? "н/д" : editorial.data.precision_at_8.toFixed(3)}</b></span>}
+                  <span>Примеров: <b className="num">{editorial.data.n_pos + editorial.data.n_neg}</b> (решений человека: {editorial.data.n_gold})</span>
                 </div>
               )}
               {!ro && <button type="button" className="btn btn-sm" disabled={retrain.isPending} onClick={() => retrain.mutate()}>{retrain.isPending ? "Ставим в очередь…" : "Переобучить"}</button>}

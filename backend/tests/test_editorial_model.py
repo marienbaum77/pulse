@@ -123,17 +123,22 @@ def test_training_with_reference_only_in_stage_a_and_ablations():
     examples = []
     vectors = []
     features = {}
-    for i in range(90):
+    for i in range(120):
         label = i % 2
-        reference = i >= 80
+        reference = i >= 100
         kind = "reference_channel" if reference else ("editor_approved" if label else "editor_rejected")
         examples.append({"label": label, "source_kind": kind, "cluster_id": None if reference else i,
-                         "created_at": f"2026-01-01T00:{i:02d}:00"})
+                         "created_at": f"2026-01-01T{i // 60:02d}:{i % 60:02d}:00"})
         vectors.append(rng.normal(size=4) + (1 if label else -1) * np.asarray([2, 0, 0, 0]))
         if not reference:
             features[i] = {"anchor": 1.0, "coverage": 0.5}
-    state = em.train_model(examples, np.asarray(vectors), features)
+    llm_scores = {i: 9.0 if row["label"] else 1.0 for i, row in enumerate(examples)}
+    state = em.train_model(examples, np.asarray(vectors), features, llm_scores=llm_scores)
     assert state["stage"] == "AB"
+    assert state["metrics"]["n_val"] > 0 and state["metrics"]["n_test"] > 0
+    assert state["metrics"]["n_compared"] == state["metrics"]["n_test"]
+    assert state["metrics"]["llm_roc_auc"] == 1.0
+    assert state["metrics"]["paired_roc_auc"] is not None
     anchor = em.train_model(examples, np.asarray(vectors), features, ablate="anchor")
     knn = em.train_model(examples, np.asarray(vectors), features, ablate="knn")
     taste = em.train_model(examples, np.asarray(vectors), features, ablate="taste_only")
@@ -141,6 +146,22 @@ def test_training_with_reference_only_in_stage_a_and_ablations():
     assert all(knn["feature_mean"][em.FEATURE_NAMES.index(name)] == 0
                for name in ("sim_pos_top3", "sim_neg_top3", "contrast_margin"))
     assert taste["stage"] == "A_only" and not taste["stage_b_weights"]
+    assert taste["t8"] is None and taste["metrics"]["precision_at_8"] is None
+
+
+def test_single_class_temporal_test_has_no_auc_or_precision_at_8():
+    rng = np.random.default_rng(10)
+    labels = [1] * 30 + [0] * 15 + [1] * 15
+    examples = [{"label": label, "source_kind": "editor_approved" if label else "editor_rejected",
+                 "cluster_id": i, "created_at": f"2026-01-01T{i // 60:02d}:{i % 60:02d}:00"}
+                for i, label in enumerate(labels)]
+    vectors = np.asarray([rng.normal(size=4) + (1 if label else -1) * np.asarray([2, 0, 0, 0])
+                          for label in labels])
+    state = em.train_model(examples, vectors, {i: {"coverage": 0.5} for i in range(len(examples))})
+    assert state["metrics"]["n_test"] == 12
+    assert state["metrics"]["positive_rate"] == 1.0
+    assert state["metrics"]["roc_auc"] is None and state["metrics"]["roc_auc_ci"] is None
+    assert state["metrics"]["precision_at_8"] is None and state["t8"] is None
 
 
 def test_training_with_single_class_is_untrained_and_scores_via_fallback():
@@ -186,3 +207,50 @@ async def test_sync_examples_uses_rejected_drafts_not_ignored_items_and_deduplic
     await em.sync_examples(pid)
     rows = await db.fetchall("SELECT hook_text, source_kind FROM editorial_examples WHERE project_id = %s", (pid,))
     assert [(r["hook_text"], r["source_kind"]) for r in rows] == [("Решение редактора", "editor_rejected")]
+
+
+@pytest.mark.usefixtures("clean")
+async def test_sync_examples_keeps_only_human_non_instant_gold_and_removes_stale_auto():
+    pid = await make_project()
+    channel = await db.fetchone("SELECT id FROM channels WHERE project_id = %s", (pid,))
+    vector = np.zeros(256, dtype=np.float32)
+    vector[0] = 1
+    cases = [
+        ("Человек одобрил", "approved", False, True),
+        ("Автоматически одобрено", "approved", False, False),
+        ("Instant одобрено", "approved", True, True),
+        ("Человек отклонил", "rejected", False, False),
+        ("Instant отклонено", "rejected", True, False),
+    ]
+    draft_ids = {}
+    for i, (title, status, instant, human) in enumerate(cases):
+        cluster = await db.fetchone(
+            "INSERT INTO clusters(project_id, title, first_seen, last_seen) VALUES (%s,%s,now(),now()) RETURNING id",
+            (pid, title),
+        )
+        await db.execute(
+            "INSERT INTO items(project_id, url_hash, title, published_at, status, cluster_id, title_embedding) "
+            "VALUES (%s,%s,%s,now(),'clustered',%s,%s)", (pid, f"gold-{i}", title, cluster["id"], vector),
+        )
+        draft = await db.fetchone(
+            "INSERT INTO drafts(project_id, cluster_ids, status, instant, approved_by) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+            (pid, [cluster["id"]], status, instant, 1 if human else None),
+        )
+        draft_ids[title] = draft["id"]
+        if status == "approved":
+            await db.execute(
+                "INSERT INTO publications(draft_id, channel_id, status) VALUES (%s,%s,'sent')",
+                (draft["id"], channel["id"]),
+            )
+    await db.execute(
+        "INSERT INTO editorial_examples(project_id, label, source_kind, hook_text, hook_embedding, meta) "
+        "VALUES (%s,1,'editor_approved','Автоматически одобрено',%s,jsonb_build_object('draft_id',%s))",
+        (pid, vector, draft_ids["Автоматически одобрено"]),
+    )
+    await em.sync_examples(pid)
+    rows = await db.fetchall(
+        "SELECT hook_text, source_kind FROM editorial_examples WHERE project_id = %s ORDER BY hook_text", (pid,),
+    )
+    assert {(r["hook_text"], r["source_kind"]) for r in rows} == {
+        ("Человек одобрил", "editor_approved"), ("Человек отклонил", "editor_rejected"),
+    }
