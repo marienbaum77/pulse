@@ -1758,15 +1758,15 @@
     "semantic_hash": ""
   },
   "backend/app/pipeline/editorial_model.py": {
-    "mtime": 1793631981.8843887,
-    "seen": 1793646410.4185429,
-    "ast_hash": "ebcb43538752a13526eddd5d61f45da6",
+    "mtime": 1793648612.5392575,
+    "seen": 1793648858.9425268,
+    "ast_hash": "50a37e61033792f35ca0c7508eb09333",
     "semantic_hash": ""
   },
   "backend/tests/test_editorial_model.py": {
-    "mtime": 1793632018.831479,
-    "seen": 1793646410.4185855,
-    "ast_hash": "9986f935de98518be21267ec1e17740f",
+    "mtime": 1793648633.084267,
+    "seen": 1793648858.9425952,
+    "ast_hash": "91f9b8f60cb5408bf7725c2004420857",
     "semantic_hash": ""
   },
   "backend/tests/test_editorial_integration.py": {

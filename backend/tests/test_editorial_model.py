@@ -143,6 +143,24 @@ def test_training_with_reference_only_in_stage_a_and_ablations():
     assert taste["stage"] == "A_only" and not taste["stage_b_weights"]
 
 
+def test_training_with_single_class_is_untrained_and_scores_via_fallback():
+    rng = np.random.default_rng(9)
+    examples = [{"label": 1, "source_kind": "reference_channel", "cluster_id": None,
+                 "created_at": f"2026-01-01T00:{i:02d}:00"} for i in range(33)]
+    vectors = np.asarray([rng.normal(size=4) for _ in examples])
+    state = em.train_model(examples, vectors, {})
+    assert state["stage"] == "untrained"
+    assert not any(state["w_taste"])
+    score, contributions = em.score_features(state, {"vectors": np.empty((0, 4)), "hooks": []},
+                                             vectors[0], {"title": "Новый рекорд: 50% роста", "coverage": 0.5})
+    assert score <= 6.5
+    assert "taste" not in contributions
+    few_negatives = examples + [{"label": 0, "source_kind": "reference_ad", "cluster_id": None,
+                                 "created_at": "2026-01-02T00:00:00"}]
+    vectors2 = np.vstack((vectors, rng.normal(size=(1, 4))))
+    assert em.train_model(few_negatives, vectors2, {})["stage"] == "untrained"
+
+
 @pytest.mark.usefixtures("clean")
 async def test_sync_examples_uses_rejected_drafts_not_ignored_items_and_deduplicates():
     pid = await make_project(channel=False)

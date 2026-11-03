@@ -37,6 +37,7 @@ MAX_STATE_BYTES = 20_000
 MAX_CHANNELS = 5
 MAX_POSTS_PER_CHANNEL = 300
 EMBED_BATCH = 64
+MIN_CLASS_EXAMPLES = 5
 _BANK_CACHE: dict[tuple[int, str], dict] = {}
 
 _URL = re.compile(r"https?://\S+|www\.\S+|t\.me/\S+", re.I)
@@ -339,7 +340,7 @@ def fallback_score(feats: dict) -> tuple[float, dict[str, float]]:
 def score_features(state: dict, bank: dict, vec, feats: dict) -> tuple[float, dict[str, float]]:
     unit = _unit(vec)
     w_taste = np.asarray(state.get("w_taste") or [], dtype=np.float32)
-    if unit is None or not len(w_taste) or unit.shape != w_taste.shape:
+    if state.get("stage") == "untrained" or unit is None or not len(w_taste) or unit.shape != w_taste.shape:
         return fallback_score(feats)
     ablation = state.get("ablation")
     matrix = np.asarray(bank.get("vectors", np.empty((0, len(unit)))), dtype=np.float32)
@@ -440,7 +441,8 @@ def train_model(examples: list[dict], vectors, feature_rows: dict[int, dict], cr
     labeled = [n for n in fit_rows if examples[rows[n]]["source_kind"] != "stream_unlabeled"]
     n_pos = sum(int(y[rows[n]]) for n in labeled)
     n_neg = len(labeled) - n_pos
-    stage = "A_only"
+    trained = min(int((y == 1).sum()), int((y == 0).sum())) >= MIN_CLASS_EXAMPLES
+    stage = "A_only" if trained else "untrained"
     means = np.zeros(len(FEATURE_NAMES))
     scales = np.ones(len(FEATURE_NAMES))
     coefficients = np.zeros(len(FEATURE_NAMES))
@@ -745,7 +747,8 @@ async def evaluate_interest_local(project: dict, cluster_ids: list[int]) -> dict
         feats["title"] = cluster["title"]
         scale, promo = anchor_features(cluster["title"])
         feats["anchor"] = max(0.0, scale - promo)
-        cold = not state or provider.name == "stub" or vec is None or not state.get("w_taste")
+        cold = (not state or provider.name == "stub" or vec is None or not state.get("w_taste")
+                or state.get("stage") == "untrained")
         if cold:
             score, contributions = fallback_score(feats)
             reason = local_reason(score, contributions, bank, fallback=True)
